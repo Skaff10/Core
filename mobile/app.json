@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "CORE Command Center",
+    "slug": "core-command-center",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "core",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#121212",
+    "android": {
+      "package": "com.core.commandcenter",
+      "backgroundColor": "#121212",
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "RECEIVE_BOOT_COMPLETED",
+        "WAKE_LOCK"
+      ]
+    },
+    "plugins": [
+      "expo-router"
+    ]
+  }
+}
+

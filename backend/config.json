@@ -1,0 +1,34 @@
+{
+  "auth_token": "core_57aea431785aa64cb6145cdf29cfde42",
+  "pin_code": "610105",
+  "quick_actions": [
+    {
+      "id": "act-taskmgr",
+      "name": "Task Manager",
+      "icon": "activity",
+      "command": "taskmgr"
+    },
+    {
+      "id": "act-explorer",
+      "name": "File Explorer",
+      "icon": "folder",
+      "command": "explorer.exe"
+    },
+    {
+      "id": "act-lock",
+      "name": "Lock Workstation",
+      "icon": "lock",
+      "command": "rundll32.exe user32.dll,LockWorkStation"
+    },
+    {
+      "id": "act-calc",
+      "name": "Calculator",
+      "icon": "terminal",
+      "command": "calc.exe"
+    }
+  ],
+  "whitelisted_paths": [
+    "C:\\Users\\skaf\\Desktop",
+    "C:\\Users\\skaf\\Downloads"
+  ]
+}

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CORE // PC COMMAND NODE</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <!-- TOP TELEMETRY BAR -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="brand-badge">CORE</div>
+      <div class="brand-meta">
+        <span class="brand-title">WINDOWS BACKEND &amp; CONTROL PLANE</span>
+        <span class="brand-sub" id="host-readout">INITIALIZING NODE...</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="telemetry-pill">
+        <span class="label">LAN IPv4</span>
+        <span class="value mono" id="lan-ip-display">0.0.0.0:8000</span>
+      </div>
+      <div class="telemetry-pill">
+        <span class="status-dot online" id="ws-status-dot"></span>
+        <span class="value mono" id="ws-status-text">STREAM LINKED</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN WORKSPACE GRID -->
+  <main class="workspace">
+    <!-- LEFT COLUMN: SECURITY, ACTIONS, PATHS -->
+    <div class="control-column">
+
+      <!-- SECTION 01: AUTHENTICATION & SECURITY -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <span class="section-index">01</span>
+            <h2>AUTHENTICATION CREDENTIALS</h2>
+          </div>
+          <button class="btn btn-secondary" id="rotate-token-btn" type="button">
+            ROTATE CREDENTIALS
+          </button>
+        </div>
+        <div class="panel-body auth-grid">
+          <div class="credential-box">
+            <div class="cred-header">
+              <span class="cred-label">PAIRING PIN (SHORT)</span>
+              <button class="btn-inline" data-copy-target="pin-value" type="button">COPY</button>
+            </div>
+            <div class="cred-value pin-highlight mono" id="pin-value">------</div>
+            <span class="cred-hint">Accepted in mobile Authorization Bearer header or X-Core-Token</span>
+          </div>
+          <div class="credential-box">
+            <div class="cred-header">
+              <span class="cred-label">BEARER SECRET TOKEN (FULL)</span>
+              <button class="btn-inline" data-copy-target="token-value" type="button">COPY</button>
+            </div>
+            <div class="cred-value mono" id="token-value">loading...</div>
+            <span class="cred-hint">Stored in backend/config.json</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 02: DYNAMIC QUICK ACTION MANAGER -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <span class="section-index">02</span>
+            <h2>DYNAMIC QUICK ACTION MANAGER</h2>
+          </div>
+          <span class="count-badge mono" id="action-count">0 REGISTERED</span>
+        </div>
+        <div class="panel-body">
+          <form id="action-form" class="form-grid" autocomplete="off">
+            <div class="field">
+              <label for="action-name">ACTION LABEL</label>
+              <input type="text" id="action-name" placeholder="e.g., Launch Antigravity" required />
+            </div>
+            <div class="field">
+              <label for="action-icon">ICON IDENTIFIER</label>
+              <input type="text" id="action-icon" placeholder="terminal / cpu / folder / lock" value="terminal" required />
+            </div>
+            <div class="field field-wide">
+              <label for="action-command">WINDOWS CLI COMMAND</label>
+              <div class="input-action-row">
+                <input type="text" id="action-command" class="mono" placeholder="e.g., agy . or powershell.exe -NoExit" required />
+                <button type="submit" class="btn btn-primary">REGISTER ACTION</button>
+              </div>
+            </div>
+          </form>
+
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>LABEL</th>
+                  <th>ICON</th>
+                  <th>CLI COMMAND</th>
+                  <th class="col-right">CONTROLS</th>
+                </tr>
+              </thead>
+              <tbody id="actions-tbody">
+                <!-- Populated by app.js -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 03: DIRECTORY PERMISSION MANAGER -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <span class="section-index">03</span>
+            <h2>FILE SYSTEM PERMISSION WHITELIST</h2>
+          </div>
+          <span class="count-badge mono" id="path-count">0 PATHS</span>
+        </div>
+        <div class="panel-body">
+          <form id="path-form" class="input-action-row" autocomplete="off">
+            <input
+              type="text"
+              id="whitelist-path-input"
+              class="mono"
+              placeholder="Absolute Windows Path (e.g., D:\Media or C:\Users\Name\Desktop)"
+              required
+            />
+            <button type="submit" class="btn btn-primary">WHITELIST PATH</button>
+          </form>
+
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ABSOLUTE WINDOWS DIRECTORY</th>
+                  <th>DISK STATUS</th>
+                  <th class="col-right">ACCESS</th>
+                </tr>
+              </thead>
+              <tbody id="paths-tbody">
+                <!-- Populated by app.js -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- RIGHT COLUMN: REAL-TIME TELEMETRY & LOG STREAM -->
+    <div class="terminal-column">
+      <section class="panel terminal-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <span class="section-index">04</span>
+            <h2>LIVE REQUEST &amp; EXECUTION LOG STREAM</h2>
+          </div>
+          <div class="terminal-controls">
+            <button class="btn btn-secondary" id="test-ping-btn" type="button">EMIT TEST PING</button>
+            <button class="btn btn-secondary" id="clear-logs-btn" type="button">CLEAR BUFFER</button>
+          </div>
+        </div>
+        <div class="terminal-viewport mono" id="log-terminal">
+          <!-- Real-time WebSocket log lines injected here -->
+        </div>
+        <div class="terminal-footer mono">
+          <span>BIND: 0.0.0.0 (LAN)</span>
+          <span>ADMIN UI: LOCALHOST ONLY</span>
+          <span id="log-line-counter">0 EVENTS</span>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
+
