@@ -23,6 +23,8 @@ const els = {
   pathForm: document.getElementById("path-form"),
   whitelistPathInput: document.getElementById("whitelist-path-input"),
   pathsTbody: document.getElementById("paths-tbody"),
+  syncDirForm: document.getElementById("sync-dir-form"),
+  syncDirInput: document.getElementById("sync-dir-input"),
   logTerminal: document.getElementById("log-terminal"),
   logLineCounter: document.getElementById("log-line-counter"),
   clearLogsBtn: document.getElementById("clear-logs-btn"),
@@ -53,6 +55,9 @@ async function fetchAdminState() {
 
   renderActions(data.quick_actions);
   renderPaths(data.whitelisted_paths);
+  if (els.syncDirInput && data.sync_dir) {
+    els.syncDirInput.value = data.sync_dir;
+  }
 }
 
 function renderActions(actions) {
@@ -167,6 +172,22 @@ els.pathForm.addEventListener("submit", async (e) => {
     await fetchAdminState();
   }
 });
+
+if (els.syncDirForm) {
+  els.syncDirForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const rawSyncDir = els.syncDirInput.value.trim();
+    if (!rawSyncDir) return;
+    const res = await fetch("/api/admin/sync-dir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sync_dir: rawSyncDir, auto_sort: true }),
+    });
+    if (res.ok) {
+      await fetchAdminState();
+    }
+  });
+}
 
 els.rotateTokenBtn.addEventListener("click", async () => {
   const res = await fetch("/api/admin/token/rotate", { method: "POST" });

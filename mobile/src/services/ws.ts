@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useConnectionStore, ForegroundTelemetry, sanitizeHostAndPort } from "../store/useConnectionStore";
+import { checkAndFetchPendingTransfers, processIncomingTransfer } from "./fileReceiver";
 
 export interface LaunchNotificationEvent {
   title: string;
@@ -47,6 +48,8 @@ export function useForegroundWebSocket(
         ws.onopen = () => {
           if (!isMounted) return;
           setConnectedState(true, null);
+          // Check for any pending files queued from PC Right-Click
+          checkAndFetchPendingTransfers(cleanIp, cleanPort, authToken).catch(() => {});
         };
 
         ws.onmessage = (event) => {
@@ -57,6 +60,9 @@ export function useForegroundWebSocket(
               setTelemetry(payload.data as ForegroundTelemetry);
             } else if (payload.type === "notification" && payload.data && onNotificationEvent) {
               onNotificationEvent(payload.data as LaunchNotificationEvent);
+            } else if (payload.type === "incoming_file" && payload.data) {
+              // Immediately download and save file pushed from Windows Right-Click
+              processIncomingTransfer(payload.data, cleanIp, cleanPort, authToken).catch(() => {});
             }
           } catch {
             // Ignore malformed frame

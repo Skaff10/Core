@@ -10,6 +10,19 @@ from pydantic import BaseModel, Field
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
 
+DEFAULT_SYNC_DIR = r"F:\From_phone"
+SYNC_SUBFOLDERS = ("Photos", "Videos", "Files")
+
+
+def ensure_sync_directories(sync_dir: str, auto_sort: bool = True) -> Path:
+    base = Path(os.path.abspath(sync_dir.strip()))
+    base.mkdir(parents=True, exist_ok=True)
+    if auto_sort:
+        for sub in SYNC_SUBFOLDERS:
+            (base / sub).mkdir(parents=True, exist_ok=True)
+    return base
+
+
 class QuickAction(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     name: str
@@ -22,6 +35,8 @@ class CoreConfig(BaseModel):
     pin_code: str
     quick_actions: List[QuickAction]
     whitelisted_paths: List[str]
+    sync_dir: str = Field(default_factory=lambda: os.getenv("SYNC_DIR", DEFAULT_SYNC_DIR))
+    sync_auto_sort: bool = True
 
 
 class ConfigManager:
@@ -130,6 +145,20 @@ class ConfigManager:
             self.save(config)
             return True
         return False
+
+    def set_sync_dir(self, raw_path: str, auto_sort: Optional[bool] = None) -> Dict[str, Any]:
+        norm_path = os.path.abspath(raw_path.strip())
+        config = self.load()
+        config.sync_dir = norm_path
+        if auto_sort is not None:
+            config.sync_auto_sort = auto_sort
+        self.save(config)
+        ensure_sync_directories(config.sync_dir, config.sync_auto_sort)
+        return {
+            "sync_dir": config.sync_dir,
+            "sync_auto_sort": config.sync_auto_sort,
+            "exists": os.path.isdir(config.sync_dir),
+        }
 
 
 config_manager = ConfigManager()

@@ -30,5 +30,7 @@
   "whitelisted_paths": [
     "C:\\Users\\skaf\\Desktop",
     "C:\\Users\\skaf\\Downloads"
-  ]
+  ],
+  "sync_dir": "F:\\From_phone",
+  "sync_auto_sort": true
 }

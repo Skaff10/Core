@@ -1,0 +1,13 @@
+.env
+*.env
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.expo/
+dist/
+mobile/android/.gradle/
+mobile/android/app/build/
+mobile/android/build/
+mobile/android/local.properties
+

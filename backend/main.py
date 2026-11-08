@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from core.auth import require_local_admin
-from core.config_manager import config_manager
+from core.config_manager import config_manager, ensure_sync_directories
 from core.logger import logger_bus
 from api.routes_admin import router as admin_router, get_lan_ipv4
 from api.routes_system import router as system_router
@@ -29,8 +29,7 @@ async def lifespan(app: FastAPI):
     cfg = config_manager.load()
     lan_ip = get_lan_ipv4()
     port = int(os.getenv("PORT", "8000"))
-    sync_dir = os.getenv("SYNC_DIR", r"C:\CommandCenter\Sync")
-    os.makedirs(sync_dir, exist_ok=True)
+    sync_path = ensure_sync_directories(cfg.sync_dir, cfg.sync_auto_sort)
 
     await logger_bus.log(
         "INFO",
@@ -41,7 +40,7 @@ async def lifespan(app: FastAPI):
     await logger_bus.log(
         "INFO",
         "SECURITY",
-        f"Loaded {len(cfg.quick_actions)} Quick Actions and {len(cfg.whitelisted_paths)} Whitelisted Paths",
+        f"Loaded {len(cfg.quick_actions)} Quick Actions, {len(cfg.whitelisted_paths)} Whitelisted Paths | Phone Vault: {sync_path}",
     )
     yield
     await logger_bus.log("WARN", "SHUTDOWN", "Core PC Server shutting down")

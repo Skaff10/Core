@@ -9,11 +9,22 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { CheckCircle2, AlertCircle, Wifi, Camera, Database } from "lucide-react-native";
+import {
+  CheckCircle2,
+  AlertCircle,
+  Wifi,
+  Camera,
+  Database,
+  Upload,
+} from "lucide-react-native";
 import { HeaderStatus } from "../../components/HeaderStatus";
 import { useConnectionStore } from "../../store/useConnectionStore";
-import { CoreApiClient } from "../../services/api";
-import { executeCameraRollSync, SyncRunSummary } from "../../services/syncTask";
+import { CoreApiClient, SyncStatusResponse } from "../../services/api";
+import {
+  executeCameraRollSync,
+  pickAndSendToPcVault,
+  SyncRunSummary,
+} from "../../services/syncTask";
 import { syncLedger } from "../../services/db";
 
 export default function SettingsScreen() {
@@ -38,14 +49,13 @@ export default function SettingsScreen() {
   } | null>(null);
   const [testing, setTesting] = useState(false);
 
-  // Phase 3: Camera Roll Sync State
+  // Phase 3: Camera Roll & Phone Vault Sync State
   const [syncingMedia, setSyncingMedia] = useState(false);
+  const [syncProgressText, setSyncProgressText] = useState<string | null>(null);
   const [ledgerCount, setLedgerCount] = useState(0);
-  const [remoteSyncInfo, setRemoteSyncInfo] = useState<{
-    sync_dir: string;
-    file_count: number;
-    total_mb: number;
-  } | null>(null);
+  const [remoteSyncInfo, setRemoteSyncInfo] = useState<SyncStatusResponse | null>(
+    null
+  );
   const [syncSummary, setSyncSummary] = useState<SyncRunSummary | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
 
@@ -71,7 +81,7 @@ export default function SettingsScreen() {
     setPortInput(pcPort);
     setTokenInput(authToken);
     loadSyncTelemetry();
-  }, [pcIp, pcPort, authToken]);
+  }, [pcIp, pcPort, authToken, loadSyncTelemetry]);
 
   const handleSaveAndVerify = async () => {
     setTesting(true);
@@ -117,14 +127,51 @@ export default function SettingsScreen() {
   const handleManualSyncNow = async () => {
     setSyncingMedia(true);
     setSyncError(null);
+    setSyncSummary(null);
+    setSyncProgressText("INITIALIZING CAMERA ROLL SYNC...");
     try {
-      const summary = await executeCameraRollSync(ipInput, portInput, tokenInput, 25);
-      setSyncSummary(summary);
+      const summary = await executeCameraRollSync(
+        ipInput,
+        portInput,
+        tokenInput,
+        50,
+        {
+          interactiveFallback: true,
+          onProgress: (msg) => setSyncProgressText(msg),
+        }
+      );
+      if (!summary.canceled) {
+        setSyncSummary(summary);
+      }
       await loadSyncTelemetry(ipInput, portInput, tokenInput);
     } catch (err: any) {
       setSyncError(err?.message || "Camera sync failed");
     } finally {
       setSyncingMedia(false);
+      setSyncProgressText(null);
+    }
+  };
+
+  const handleSendAnyFilesToVault = async () => {
+    setSyncingMedia(true);
+    setSyncError(null);
+    setSyncSummary(null);
+    setSyncProgressText("SELECT FILES / PHOTOS / VIDEOS...");
+    try {
+      const summary = await pickAndSendToPcVault(ipInput, portInput, tokenInput, {
+        mediaOnly: false,
+        useLedger: false,
+        onProgress: (msg) => setSyncProgressText(msg),
+      });
+      if (!summary.canceled) {
+        setSyncSummary(summary);
+      }
+      await loadSyncTelemetry(ipInput, portInput, tokenInput);
+    } catch (err: any) {
+      setSyncError(err?.message || "File transfer failed");
+    } finally {
+      setSyncingMedia(false);
+      setSyncProgressText(null);
     }
   };
 
@@ -225,7 +272,7 @@ export default function SettingsScreen() {
                 <Text
                   style={[
                     styles.bannerText,
-                    { color: statusBanner.ok ? "#10B981" : "#EF4444" },
+                    { color: statusBanner.ok ? "#10B981" : "#EF4444", flex: 1 },
                   ]}
                 >
                   {statusBanner.message}
@@ -235,11 +282,13 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* SECTION 02: PHASE 3 CAMERA ROLL AUTO-SYNC ENGINE */}
+        {/* SECTION 02: PHASE 3 CAMERA ROLL & PHONE VAULT SYNC ENGINE */}
         <View style={styles.panel}>
           <View style={styles.panelHeader}>
             <Camera size={14} color="#06B6D4" />
-            <Text style={styles.panelTitle}>BACKGROUND CAMERA ROLL SYNC (6H CRON)</Text>
+            <Text style={styles.panelTitle}>
+              PHONE VAULT &amp; CAMERA ROLL SYNC (6H CRON)
+            </Text>
           </View>
 
           <View style={styles.panelBody}>
@@ -249,17 +298,33 @@ export default function SettingsScreen() {
                 <Text style={styles.statValue}>{ledgerCount} HASHES</Text>
               </View>
               <View style={styles.statBox}>
-                <Text style={styles.statLabel}>PC VAULT FILES</Text>
+                <Text style={styles.statLabel}>PC VAULT TOTAL</Text>
                 <Text style={styles.statValue}>
-                  {remoteSyncInfo ? `${remoteSyncInfo.file_count} (${remoteSyncInfo.total_mb} MB)` : "---"}
+                  {remoteSyncInfo
+                    ? `${remoteSyncInfo.file_count} (${remoteSyncInfo.total_mb} MB)`
+                    : "---"}
                 </Text>
               </View>
             </View>
 
+            {remoteSyncInfo && (
+              <View style={styles.subfoldersRow}>
+                <Text style={styles.subfolderBadge}>
+                  PHOTOS: {remoteSyncInfo.photos_count ?? 0}
+                </Text>
+                <Text style={styles.subfolderBadge}>
+                  VIDEOS: {remoteSyncInfo.videos_count ?? 0}
+                </Text>
+                <Text style={styles.subfolderBadge}>
+                  FILES: {remoteSyncInfo.files_count ?? 0}
+                </Text>
+              </View>
+            )}
+
             <View style={styles.vaultPathBox}>
-              <Database size={12} color="#94A3B8" />
-              <Text style={styles.vaultPathText} numberOfLines={1}>
-                DEST: {remoteSyncInfo?.sync_dir || "C:\\CommandCenter\\Sync"}
+              <Database size={12} color="#06B6D4" />
+              <Text style={styles.vaultPathText} numberOfLines={2}>
+                PC VAULT: {remoteSyncInfo?.sync_dir || "F:\\From_phone"} (\Photos, \Videos, \Files)
               </Text>
             </View>
 
@@ -269,16 +334,55 @@ export default function SettingsScreen() {
               disabled={syncingMedia}
             >
               {syncingMedia ? (
-                <ActivityIndicator size="small" color="#06B6D4" />
+                <View style={styles.progressRow}>
+                  <ActivityIndicator size="small" color="#090D16" />
+                  <Text style={styles.primaryBtnText}>
+                    {syncProgressText || "SYNCING..."}
+                  </Text>
+                </View>
               ) : (
-                <Text style={styles.syncNowBtnText}>SYNC CAMERA ROLL NOW</Text>
+                <Text style={styles.primaryBtnText}>SYNC CAMERA ROLL NOW</Text>
               )}
             </TouchableOpacity>
 
+            <TouchableOpacity
+              style={styles.secondaryVaultBtn}
+              onPress={handleSendAnyFilesToVault}
+              disabled={syncingMedia}
+            >
+              <Upload size={13} color="#06B6D4" />
+              <Text style={styles.secondaryVaultBtnText}>
+                PICK &amp; SEND ANY FILES TO F:\From_phone
+              </Text>
+            </TouchableOpacity>
+
             {syncSummary && (
-              <View style={styles.bannerOk}>
-                <Text style={[styles.bannerText, { color: "#10B981", padding: 10 }]}>
-                  SYNC COMPLETE ({syncSummary.timestamp}) // UPLOADED: {syncSummary.uploaded} | SKIPPED DUPLICATES: {syncSummary.skipped}
+              <View
+                style={
+                  syncSummary.failed > 0 && syncSummary.uploaded === 0
+                    ? styles.bannerErr
+                    : styles.bannerOk
+                }
+              >
+                <Text
+                  style={[
+                    styles.bannerText,
+                    {
+                      color:
+                        syncSummary.failed > 0 && syncSummary.uploaded === 0
+                          ? "#EF4444"
+                          : "#10B981",
+                      padding: 10,
+                    },
+                  ]}
+                >
+                  SYNC ({syncSummary.timestamp}) // SCANNED: {syncSummary.scanned} | UPLOADED:{" "}
+                  {syncSummary.uploaded} | SKIPPED: {syncSummary.skipped}
+                  {syncSummary.failed > 0
+                    ? ` | FAILED: ${syncSummary.failed}${
+                        syncSummary.lastError ? ` (${syncSummary.lastError})` : ""
+                      }`
+                    : ""}
                 </Text>
               </View>
             )}
@@ -433,6 +537,22 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     fontWeight: "800",
   },
+  subfoldersRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  subfolderBadge: {
+    flex: 1,
+    backgroundColor: "#141414",
+    borderWidth: 1,
+    borderColor: "#2A2A2A",
+    paddingVertical: 6,
+    textAlign: "center",
+    color: "#94A3B8",
+    fontSize: 10,
+    fontFamily: "monospace",
+    fontWeight: "700",
+  },
   vaultPathBox: {
     backgroundColor: "#141414",
     borderWidth: 1,
@@ -445,25 +565,39 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   vaultPathText: {
-    color: "#94A3B8",
+    color: "#E2E8F0",
     fontSize: 11,
     fontFamily: "monospace",
     flex: 1,
   },
   syncNowBtn: {
-    backgroundColor: "#141414",
-    borderWidth: 1,
-    borderColor: "#06B6D4",
+    backgroundColor: "#06B6D4",
     paddingVertical: 12,
     borderRadius: 2,
     alignItems: "center",
   },
-  syncNowBtnText: {
+  progressRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  secondaryVaultBtn: {
+    backgroundColor: "#141414",
+    borderWidth: 1,
+    borderColor: "#06B6D4",
+    paddingVertical: 11,
+    borderRadius: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  secondaryVaultBtnText: {
     color: "#06B6D4",
     fontFamily: "monospace",
-    fontSize: 12,
-    fontWeight: "900",
-    letterSpacing: 0.8,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.6,
   },
   banner: {
     flexDirection: "row",

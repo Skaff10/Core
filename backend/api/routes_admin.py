@@ -6,6 +6,8 @@ from pydantic import BaseModel
 from core.auth import require_local_admin
 from core.config_manager import config_manager
 from core.logger import logger_bus
+from api.websockets import mobile_bus
+from services.transfer_manager import transfer_manager
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"], dependencies=[Depends(require_local_admin)])
 
@@ -20,8 +22,17 @@ class PathCreateRequest(BaseModel):
     path: str
 
 
+class SyncDirUpdateRequest(BaseModel):
+    sync_dir: str
+    auto_sort: bool = True
+
+
 class TestActionRequest(BaseModel):
     action_id: str
+
+
+class PushToMobileRequest(BaseModel):
+    file_path: str
 
 
 def get_lan_ipv4() -> str:
@@ -50,6 +61,8 @@ async def get_admin_state():
         "pin_code": cfg.pin_code,
         "quick_actions": cfg.quick_actions,
         "whitelisted_paths": paths_with_status,
+        "sync_dir": cfg.sync_dir,
+        "sync_auto_sort": cfg.sync_auto_sort,
     }
 
 
@@ -144,4 +157,46 @@ async def remove_whitelisted_path(path: str):
         raise HTTPException(status_code=404, detail="Path not found in whitelist.")
     await logger_bus.log("INFO", "PERM_MGR", f"Removed directory from whitelist: '{path}'")
     return {"deleted": True, "path": path}
+
+
+@router.post("/sync-dir")
+async def update_sync_directory(payload: SyncDirUpdateRequest):
+    if not payload.sync_dir.strip():
+        raise HTTPException(status_code=400, detail="Sync directory path cannot be empty.")
+    try:
+        res = config_manager.set_sync_dir(payload.sync_dir, payload.auto_sort)
+        await logger_bus.log(
+            "INFO",
+            "PHONE_VAULT",
+            f"Updated Phone Transfer & Sync Vault to '{res['sync_dir']}'",
+            "Auto-sort: Photos / Videos / Files" if res["sync_auto_sort"] else "Flat folder",
+        )
+        return res
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/push-to-mobile")
+async def push_file_to_mobile(payload: PushToMobileRequest):
+    if not payload.file_path.strip():
+        raise HTTPException(status_code=400, detail="File path cannot be empty.")
+    try:
+        transfer = transfer_manager.create_transfer(payload.file_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    transfer_data = transfer.to_dict()
+    # Broadcast to mobile clients over mobile_bus
+    await mobile_bus.broadcast("incoming_file", transfer_data)
+
+    await logger_bus.log(
+        "PUSH",
+        "PC_TO_MOBILE",
+        f"Right-Click 'Send to Mobile': '{transfer.filename}' queued ({transfer.file_size} bytes)",
+        transfer.file_path,
+    )
+    return {"success": True, "transfer": transfer_data}
+
 
