@@ -37,6 +37,15 @@ class CoreConfig(BaseModel):
     whitelisted_paths: List[str]
     sync_dir: str = Field(default_factory=lambda: os.getenv("SYNC_DIR", DEFAULT_SYNC_DIR))
     sync_auto_sort: bool = True
+    agent_enabled: bool = True
+    agy_path: Optional[str] = None
+    agent_default_model: str = "claude-sonnet-5-5"
+    agent_default_mode: str = "default"
+    agent_project_roots: List[str] = Field(default_factory=list)
+    agent_max_loaded_sessions: int = 6
+    agent_max_concurrent_turns: int = 2
+    agent_permission_timeout_s: int = 0
+
 
 
 class ConfigManager:

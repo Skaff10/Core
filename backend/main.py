@@ -16,7 +16,10 @@ from api.routes_admin import router as admin_router, get_lan_ipv4
 from api.routes_system import router as system_router
 from api.routes_sync import router as sync_router
 from api.routes_files import router as files_router
+from api.routes_agent import router as agent_router
 from api.websockets import router as ws_router
+from api.ws_agent import router as ws_agent_router
+from services.agent.hub import agent_hub
 
 load_dotenv()
 
@@ -43,6 +46,7 @@ async def lifespan(app: FastAPI):
         f"Loaded {len(cfg.quick_actions)} Quick Actions, {len(cfg.whitelisted_paths)} Whitelisted Paths | Phone Vault: {sync_path}",
     )
     yield
+    await agent_hub.acp.stop()
     await logger_bus.log("WARN", "SHUTDOWN", "Core PC Server shutting down")
 
 
@@ -83,7 +87,9 @@ app.include_router(admin_router)
 app.include_router(system_router)
 app.include_router(sync_router)
 app.include_router(files_router)
+app.include_router(agent_router)
 app.include_router(ws_router)
+app.include_router(ws_agent_router)
 
 app.mount("/static", StaticFiles(directory=str(WEB_PANEL_DIR)), name="static")
 

@@ -6,8 +6,12 @@ __pycache__/
 node_modules/
 .expo/
 dist/
+backend/data/
+backend/logs/
+backend/.playwright_profile/
 mobile/android/.gradle/
 mobile/android/app/build/
 mobile/android/build/
 mobile/android/local.properties
+
 
