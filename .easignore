@@ -1,0 +1,9 @@
+backend/
+.venv/
+node_modules/
+mobile/node_modules/
+mobile/android/
+mobile/ios/
+.expo/
+dist/
+

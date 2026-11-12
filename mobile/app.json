@@ -3,13 +3,14 @@
     "name": "CORE Command Center",
     "slug": "core-command-center",
     "owner": "skaf10",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "scheme": "core",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#121212",
     "android": {
       "package": "com.core.commandcenter",
+      "versionCode": 2,
       "backgroundColor": "#121212",
       "permissions": [
         "INTERNET",
@@ -38,7 +39,16 @@
           "savePhotosPermission": "Allow CORE Command Center to save files and photos from your PC.",
           "isAccessMediaLocationEnabled": true
         }
-      ]
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      "./plugins/withNetworkSecurityConfig.js"
     ],
     "extra": {
       "router": {

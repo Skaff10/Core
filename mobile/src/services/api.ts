@@ -58,7 +58,7 @@ export interface PendingTransfer {
 
 export class CoreApiClient {
   static buildBaseUrl(ip: string, port: string): string {
-    let cleanIp = (ip || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+    let cleanIp = (ip || "").trim().replace(/^https?:\/\//i, "").replace(/[\.\/\s]+$/, "");
     let cleanPort = (port || "8000").trim();
     if (cleanIp.includes(":")) {
       const parts = cleanIp.split(":");
@@ -67,6 +67,7 @@ export class CoreApiClient {
         cleanPort = parts[1];
       }
     }
+    cleanIp = cleanIp.replace(/[\.\/\s]+$/, "");
     return `http://${cleanIp || "192.168.0.120"}:${cleanPort || "8000"}`;
   }
 

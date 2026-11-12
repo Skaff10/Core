@@ -41,7 +41,7 @@ const STORAGE_KEYS = {
 };
 
 export function sanitizeHostAndPort(ip: string, port?: string): { cleanIp: string; cleanPort: string } {
-  let cleanIp = (ip || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  let cleanIp = (ip || "").trim().replace(/^https?:\/\//i, "").replace(/[\.\/\s]+$/, "");
   let cleanPort = (port || "8000").trim();
   if (cleanIp.includes(":")) {
     const parts = cleanIp.split(":");
@@ -50,6 +50,7 @@ export function sanitizeHostAndPort(ip: string, port?: string): { cleanIp: strin
       cleanPort = parts[1];
     }
   }
+  cleanIp = cleanIp.replace(/[\.\/\s]+$/, "");
   return { cleanIp: cleanIp || "192.168.0.120", cleanPort: cleanPort || "8000" };
 }
 
