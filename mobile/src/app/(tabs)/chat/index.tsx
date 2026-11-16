@@ -10,7 +10,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import {
   FolderGit2,
   Monitor,
@@ -59,6 +59,12 @@ export default function ProjectsListScreen() {
     setLoading(true);
     loadProjects().finally(() => setLoading(false));
   }, [loadProjects]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadProjects();
+    }, [loadProjects])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);

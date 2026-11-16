@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -7,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Callable, Awaitable, List
 
 import psutil
+from core.config_manager import config_manager
 from core.logger import logger_bus
 from services.agent.agy_locator import locate_agy_binary
 
@@ -16,22 +18,28 @@ LOGS_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 class AcpClient:
     """
     Robust JSON-RPC 2.0 stdio client for `agy acp`.
-    Threaded readers avoid asyncio Windows Selector/Proactor limitations and 64KB line caps.
+    - Passes `--app-data-dir` so ACP shares the Antigravity Desktop store.
+    - Uses threaded readers (avoids Windows asyncio Selector/64KB limits) + ordered asyncio.Queue dispatch.
     """
 
-    def __init__(self):
+    def __init__(self, cwd: Optional[str] = None, label: str = "main"):
+        self.cwd = cwd or str(Path.home())
+        self.label = label
         self.process: Optional[subprocess.Popen] = None
         self._stdin_lock = threading.Lock()
         self._req_id = 0
         self._req_lock = threading.Lock()
         self._pending_futures: Dict[Any, asyncio.Future] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._dispatch_queue: Optional[asyncio.Queue] = None
+        self._dispatch_task: Optional[asyncio.Task] = None
         self._running = False
         self._initialized = False
+        self._last_version: Optional[str] = None
 
-        # Event callbacks (async)
+        # Event callbacks (async, invoked strictly in arrival order)
         self.on_session_update: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None
-        self.on_permission_request: Optional[Callable[[str, str, Dict[str, Any], List[Dict[str, Any]]], Awaitable[None]]] = None
+        self.on_permission_request: Optional[Callable[[Any, str, Dict[str, Any], List[Dict[str, Any]]], Awaitable[None]]] = None
         self.on_process_exit: Optional[Callable[[int], Awaitable[None]]] = None
 
         self.agent_info: Dict[str, Any] = {}
@@ -42,8 +50,14 @@ class AcpClient:
             self._req_id += 1
             return self._req_id
 
+    def _log_file_path(self) -> Path:
+        if self.label == "main":
+            return LOGS_DIR / "agy_acp.log"
+        digest = hashlib.sha1(self.cwd.lower().encode("utf-8")).hexdigest()[:8]
+        return LOGS_DIR / f"agy_acp_{digest}.log"
+
     async def start(self) -> bool:
-        if self.process and self.process.poll() is None:
+        if self.process and self.process.poll() is None and self._initialized:
             return True
 
         self._loop = asyncio.get_running_loop()
@@ -52,20 +66,31 @@ class AcpClient:
             await logger_bus.log("ERROR", "ACP", "Antigravity binary (agy.exe) not found on PC.")
             return False
 
-        LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        acp_log_file = LOGS_DIR / "agy_acp.log"
+        cfg = config_manager.load()
+        app_data_dir = (cfg.agy_app_data_dir or "antigravity").strip()
 
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        acp_log_file = self._log_file_path()
+
+        spawn_cwd = self.cwd if os.path.isdir(self.cwd) else str(Path.home())
         cmd = [
             locator["path"],
             "acp",
+            "--app-data-dir",
+            app_data_dir,
             "--process-per-session",
             "--log-file",
             str(acp_log_file),
         ]
 
-        await logger_bus.log("INFO", "ACP", f"Spawning ACP daemon: {' '.join(cmd)}")
+        await logger_bus.log("INFO", "ACP", f"Spawning ACP daemon ({self.label}, cwd={spawn_cwd}): {' '.join(cmd)}")
 
         try:
+            self._dispatch_queue = asyncio.Queue()
+            if self._dispatch_task and not self._dispatch_task.done():
+                self._dispatch_task.cancel()
+            self._dispatch_task = asyncio.create_task(self._dispatch_loop())
+
             self.process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -75,15 +100,14 @@ class AcpClient:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
-                cwd=str(Path.home()),
+                cwd=spawn_cwd,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             self._running = True
 
-            threading.Thread(target=self._stdout_reader, daemon=True, name="acp-stdout").start()
-            threading.Thread(target=self._stderr_reader, daemon=True, name="acp-stderr").start()
+            threading.Thread(target=self._stdout_reader, daemon=True, name=f"acp-stdout-{self.label}").start()
+            threading.Thread(target=self._stderr_reader, daemon=True, name=f"acp-stderr-{self.label}").start()
 
-            # Perform protocol initialize handshake
             init_res = await self.call(
                 "initialize",
                 {
@@ -101,22 +125,53 @@ class AcpClient:
                 self.agent_info = res_data.get("agentInfo", {})
                 self.agent_capabilities = res_data.get("agentCapabilities", {})
                 self._initialized = True
+                version = self.agent_info.get("version", "?")
+                if self._last_version and self._last_version != version:
+                    await logger_bus.log("WARN", "ACP", f"agy version changed: {self._last_version} -> {version}")
+                self._last_version = version
                 await logger_bus.log(
                     "INFO",
                     "ACP",
-                    f"ACP Handshake OK: {self.agent_info.get('name', 'Antigravity')} v{self.agent_info.get('version', '?')}",
+                    f"ACP Handshake OK ({self.label}): {self.agent_info.get('name', 'Antigravity')} v{version}",
                 )
                 return True
-            else:
-                await logger_bus.log("ERROR", "ACP", f"ACP initialize failed: {init_res}")
-                return False
+
+            await logger_bus.log("ERROR", "ACP", f"ACP initialize failed: {init_res}")
+            await self.stop()
+            return False
 
         except Exception as exc:
             await logger_bus.log("ERROR", "ACP", f"Failed starting ACP process: {exc}")
+            await self.stop()
             return False
 
     def is_alive(self) -> bool:
         return bool(self.process and self.process.poll() is None and self._initialized)
+
+    async def _dispatch_loop(self):
+        while self._dispatch_queue is not None:
+            try:
+                item = await self._dispatch_queue.get()
+                kind = item[0]
+                if kind == "update" and self.on_session_update:
+                    await self.on_session_update(item[1], item[2])
+                elif kind == "permission" and self.on_permission_request:
+                    await self.on_permission_request(item[1], item[2], item[3], item[4])
+                elif kind == "exit":
+                    if self.on_process_exit:
+                        await self.on_process_exit(item[1])
+                    break
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                await logger_bus.log("ERROR", "ACP", f"Dispatch handler error: {exc}")
+
+    def _enqueue(self, item: tuple):
+        if self._dispatch_queue is not None and self._loop and not self._loop.is_closed():
+            try:
+                self._loop.call_soon_threadsafe(self._dispatch_queue.put_nowait, item)
+            except Exception:
+                pass
 
     def _send_raw_json(self, payload: Dict[str, Any]):
         line = json.dumps(payload, ensure_ascii=False) + "\n"
@@ -125,7 +180,7 @@ class AcpClient:
                 try:
                     self.process.stdin.write(line)
                     self.process.stdin.flush()
-                except Exception as exc:
+                except Exception:
                     pass
 
     async def call(self, method: str, params: Dict[str, Any], timeout: float = 60.0) -> Dict[str, Any]:
@@ -156,7 +211,7 @@ class AcpClient:
     def respond_to_permission_request(self, request_id: Any, option_id: Optional[str]):
         """
         Replies to agy's session/request_permission.
-        id matches the incoming id type exactly.
+        id matches the incoming id type exactly (str or int).
         """
         if option_id:
             payload = {
@@ -192,11 +247,23 @@ class AcpClient:
         }
         self._send_raw_json(payload)
 
+    def _fail_pending_futures(self, reason: str):
+        if not self._loop or self._loop.is_closed():
+            return
+        for req_id in list(self._pending_futures.keys()):
+            fut = self._pending_futures.pop(req_id, None)
+            if fut and not fut.done():
+                try:
+                    self._loop.call_soon_threadsafe(fut.set_exception, RuntimeError(reason))
+                except Exception:
+                    pass
+
     def _stdout_reader(self):
-        if not self.process or not self.process.stdout:
+        proc = self.process
+        if not proc or not proc.stdout:
             return
 
-        for raw_line in iter(self.process.stdout.readline, ""):
+        for raw_line in iter(proc.stdout.readline, ""):
             line = raw_line.strip()
             if not line:
                 continue
@@ -225,13 +292,7 @@ class AcpClient:
                 params = msg.get("params", {})
                 sid = params.get("sessionId", "")
                 update = params.get("update", {})
-                if self.on_session_update and self._loop and not self._loop.is_closed():
-                    try:
-                        self._loop.call_soon_threadsafe(
-                            lambda s=sid, u=update: asyncio.create_task(self.on_session_update(s, u))
-                        )
-                    except Exception:
-                        pass
+                self._enqueue(("update", sid, update))
                 continue
 
             # Case 3: Server Request to Client (e.g. session/request_permission)
@@ -241,44 +302,33 @@ class AcpClient:
                 sid = params.get("sessionId", "")
                 tool_call = params.get("toolCall", {})
                 options = params.get("options", [])
-                if self.on_permission_request and self._loop and not self._loop.is_closed():
-                    try:
-                        self._loop.call_soon_threadsafe(
-                            lambda r=req_id, s=sid, t=tool_call, o=options: asyncio.create_task(
-                                self.on_permission_request(r, s, t, o)
-                            )
-                        )
-                    except Exception:
-                        pass
+                self._enqueue(("permission", req_id, sid, tool_call, options))
                 continue
 
             # Unknown server request requiring response
             if method and msg_id is not None:
                 self.respond_method_not_found(msg_id)
 
-        exit_code = self.process.poll() or 0
+        exit_code = (proc.poll() if proc else None) or 0
+        was_running = self._running
         self._running = False
         self._initialized = False
-        if self.on_process_exit and self._loop and not self._loop.is_closed():
-            try:
-                self._loop.call_soon_threadsafe(
-                    lambda c=exit_code: asyncio.create_task(self.on_process_exit(c))
-                )
-            except Exception:
-                pass
+        self._fail_pending_futures(f"ACP daemon exited (code {exit_code})")
+        if was_running:
+            self._enqueue(("exit", exit_code))
 
     def _stderr_reader(self):
-        if not self.process or not self.process.stderr:
+        proc = self.process
+        if not proc or not proc.stderr:
             return
-        for line in iter(self.process.stderr.readline, ""):
-            # Lines go to agy_acp.log directly via process args; drain pipe
+        for _ in iter(proc.stderr.readline, ""):
             pass
 
     async def stop(self):
         self._running = False
+        self._initialized = False
         if self.process:
             try:
-                # Terminate child worker processes first
                 parent = psutil.Process(self.process.pid)
                 for child in parent.children(recursive=True):
                     try:
@@ -292,4 +342,11 @@ class AcpClient:
                 except Exception:
                     pass
             self.process = None
-        self._initialized = False
+
+        if self._dispatch_task and not self._dispatch_task.done():
+            self._dispatch_task.cancel()
+            try:
+                await self._dispatch_task
+            except asyncio.CancelledError:
+                pass
+            self._dispatch_task = None

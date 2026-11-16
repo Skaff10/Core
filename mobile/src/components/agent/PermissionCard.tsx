@@ -1,7 +1,7 @@
 import React from "react";
 import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { ShieldAlert, Check, X } from "lucide-react-native";
-import { PermissionRequestPayload } from "../../types/agent";
+import { PermissionRequestPayload, PermissionOption } from "../../types/agent";
 
 interface Props {
   permission: PermissionRequestPayload;
@@ -13,6 +13,27 @@ export const PermissionCard: React.FC<Props> = ({ permission, onRespond }) => {
   const toolName = toolCall.name || "Tool Request";
   const toolTitle = toolCall.title || toolName;
   const args = toolCall.args;
+  const rawOptions: PermissionOption[] =
+    Array.isArray(permission.options) && permission.options.length > 0
+      ? permission.options
+      : [
+          { optionId: "deny", name: "Deny", kind: "reject_once" },
+          { optionId: "allow", name: "Allow & Run", kind: "allow_once" },
+        ];
+
+  const isRejectOption = (opt: PermissionOption) => {
+    const k = (opt.kind || "").toLowerCase();
+    const id = (opt.optionId || "").toLowerCase();
+    const name = (opt.name || "").toLowerCase();
+    return (
+      k.includes("reject") ||
+      k.includes("deny") ||
+      id.includes("deny") ||
+      id.includes("reject") ||
+      name.includes("deny") ||
+      name.includes("reject")
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -25,30 +46,36 @@ export const PermissionCard: React.FC<Props> = ({ permission, onRespond }) => {
 
       {args && (
         <View style={styles.argsBox}>
-          <Text style={styles.argsText}>
+          <Text style={styles.argsText} numberOfLines={8}>
             {typeof args === "string" ? args : JSON.stringify(args, null, 2)}
           </Text>
         </View>
       )}
 
       <View style={styles.buttonRow}>
-        <TouchableOpacity
-          style={[styles.btn, styles.denyBtn]}
-          activeOpacity={0.8}
-          onPress={() => onRespond("deny")}
-        >
-          <X size={14} color="#EF4444" />
-          <Text style={styles.denyText}>Deny</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.btn, styles.allowBtn]}
-          activeOpacity={0.8}
-          onPress={() => onRespond("allow")}
-        >
-          <Check size={14} color="#090D16" />
-          <Text style={styles.allowText}>Allow & Run</Text>
-        </TouchableOpacity>
+        {rawOptions.map((opt) => {
+          const reject = isRejectOption(opt);
+          return (
+            <TouchableOpacity
+              key={opt.optionId}
+              style={[styles.btn, reject ? styles.denyBtn : styles.allowBtn]}
+              activeOpacity={0.8}
+              onPress={() => onRespond(opt.optionId)}
+            >
+              {reject ? (
+                <X size={14} color="#EF4444" />
+              ) : (
+                <Check size={14} color="#090D16" />
+              )}
+              <Text
+                style={reject ? styles.denyText : styles.allowText}
+                numberOfLines={1}
+              >
+                {opt.name}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
       </View>
     </View>
   );
@@ -95,15 +122,18 @@ const styles = StyleSheet.create({
   },
   buttonRow: {
     flexDirection: "row",
-    gap: 10,
+    flexWrap: "wrap",
+    gap: 8,
     marginTop: 4,
   },
   btn: {
-    flex: 1,
+    flexGrow: 1,
+    minWidth: "42%",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 10,
+    paddingHorizontal: 10,
     borderRadius: 4,
     gap: 6,
   },
@@ -115,7 +145,7 @@ const styles = StyleSheet.create({
   denyText: {
     color: "#EF4444",
     fontWeight: "700",
-    fontSize: 12,
+    fontSize: 11.5,
     fontFamily: "monospace",
   },
   allowBtn: {
@@ -124,8 +154,7 @@ const styles = StyleSheet.create({
   allowText: {
     color: "#090D16",
     fontWeight: "900",
-    fontSize: 12,
+    fontSize: 11.5,
     fontFamily: "monospace",
   },
 });
-

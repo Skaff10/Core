@@ -1,373 +1,223 @@
-# Plan: Phone ↔ Antigravity Agent Chat (Core "CHAT" tab)
+# Plan: OBS Studio Control + Antigravity Chat & PC Sync (Core)
 
-> Status: **PLAN, nothing implemented yet**. Every "verified" claim below was tested on this PC
-> (agy 1.5.6, 2026-11-12). Claims marked **VERIFY** are assumptions that Phase 0 must confirm before we build on them.
-
----
-
-## 1. Goal
-
-From the phone, I want to:
-
-1. **See my projects.** These are the workspaces Antigravity has conversations in (Core, FTune, Motio, …).
-2. **Open a project** and see its conversations, newest first, with titles.
-3. **Open a conversation** (including ones I started on the PC) and read its history.
-4. **Send instructions.** The agent does the work on the PC and I watch the reply stream in live: text, tool calls, file edits.
-5. **Approve or deny** the agent's commands and edits from the phone.
-6. **Stop** a running turn, **switch model / mode**, or **start a new conversation** in any project.
-7. Close the app, come back later, and **catch up** on whatever the agent did meanwhile.
-
-The first target is Antigravity. The design uses a standard protocol (ACP), so Claude Code and Gemini CLI can plug in later without a rewrite.
+> Status: **DRAFT PLAN FOR REVIEW** — waiting for your feedback / "proceed".
+> All environment details below were verified on this PC on 2026-11-16 (OBS 32.2.2, `agy` 1.5.9).
 
 ---
 
-## 2. What I verified on this PC (the facts this plan is built on)
+## 1. Goals
 
-| #   | Finding                                                                                                                                                                                                                                     | Evidence                                                  |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| F1  | `agy.exe` is installed at `%USERPROFILE%\.gemini\bin\agy.exe` but **is not on PATH**.                                                                                                                                                       | `Get-Command agy` failed. The file exists, version 1.5.6. |
-| F2  | `agy acp` starts an **Agent Client Protocol (JSON‑RPC over stdio) server**. This is the documented, official way for an app to drive the agent.                                                                                             | `agy help acp`                                            |
-| F3  | ACP capabilities: `loadSession`, `session/list`, `resume`, `close`, `additionalDirectories`, **image prompts**, embedded context.                                                                                                           | `initialize` response                                     |
-| F4  | `session/list` returns **every Antigravity conversation**, including ones made in the desktop app (this very planning conversation was in the list). 181 sessions, fields `sessionId, cwd, title, updatedAt`.                               | spike `acp_list.py`                                       |
-| F5  | `session/list` **ignores the `cwd` filter** and has **no pagination**. We have to group and filter ourselves.                                                                                                                               | same spike                                                |
-| F6  | `cwd` comes in **4 different formats** for the same folder: `/f%3A/Temporary%20Codebae/Core`, `/f:/…`, `/C:/…`, `F:\Temporary Codebae\Core`.                                                                                                | same spike                                                |
-| F7  | `session/new` returns the available **models**, **modes** (`default`, `accept-edits`, `plan`) and config options (`model`, `thought_level`, `mode`).                                                                                        | spike                                                     |
-| F8  | `session/set_config_option` switches model and thinking level live (e.g. `claude-sonnet-5-5`, `low`).                                                                                                                                       | spike                                                     |
-| F9  | `session/load` **replays the full history** as `session/update` notifications.                                                                                                                                                              | spike                                                     |
-| F10 | Full turn works: `tool_call` → `tool_call_update(pending)` → **`session/request_permission`** (options `allow`/`deny`) → answer → `tool_call_update(completed, rawOutput)` → `agent_message_chunk`s → `stopReason: end_turn` + token usage. | spike `acp_load_perm.py`                                  |
-| F11 | **Quota exhaustion is not an error.** It arrives as normal agent text: `⚠ Individual quota reached… Resets in 53h…`, with `stopReason: end_turn`. The default model (Gemini 4 Argon) is exhausted right now.                                | spike                                                     |
-| F12 | `available_commands_update` lists ~109 slash commands and skills (`/goal`, `/plan`, …), which gives us phone autocomplete.                                                                                                                  | spike                                                     |
-| F13 | One trivial turn cost **~44.6k tokens** (most of it cached). That is the system prompt, skills and tools overhead, so every phone message is a full agent turn.                                                                             | `usage` in prompt result                                  |
-| F14 | Antigravity also has an official **Remote Control** feature (`agy remote-control start`, phone browser dashboard, needs internet and the same Google account). It is not registered on this PC.                                             | `agy remote-control status`, docs                         |
-| F15 | Protocol quirks: `tool_call` has non-standard `name`/`args` fields, capability keys are duplicated in snake_case and camelCase, and the permission request `id` is a **string** (`"1"`).                                                    | raw frames                                                |
-| F16 | uvicorn 0.54 uses `ProactorEventLoop` on Windows **only when reload/workers are off**. With `SelectorEventLoop`, asyncio subprocesses throw `NotImplementedError`.                                                                          | `uvicorn/loops/asyncio.py`                                |
-
-> [!NOTE]
-> The spikes created one throwaway conversation titled **"Ping Reply Test"**, which now shows in the Antigravity list (cwd = this conversation's `scratch/acp_sandbox`). You can delete it.
-
-### What exists today (and why it can't be extended as is)
-
-`backend/api/websockets.py` `/ws/chat` + `services/cli_runner.py`:
-
-- `cmd = f'agy {prompt}'` with `shell=True` is a **command injection hole**: anything typed on the phone runs as a shell command. The default `AGY_CLI_CMD` is `agy --help`, so it never actually chatted.
-- It blocks the WS loop until the process exits. There is no streaming (all lines are collected, _then_ sent), there is a 30–45 s timeout, there are no sessions or projects, and nothing is persisted.
-- The `powershell` target is **raw remote code execution from the phone**.
-- `mobile/(tabs)/chat.tsx` keeps a single in-memory thread with a per-screen socket. Messages are lost on navigation, and every token triggers an O(n) `setMessages` map.
-
-**Decision: replace the Antigravity path entirely with an ACP bridge.** The old `/ws/chat` stays only until the new mobile screen ships, and then it gets removed.
+1. **OBS Studio Control on Mobile Home Tab:**
+   - Open/launch OBS Studio on the PC from the phone.
+   - Start Recording, Pause / Resume Recording, and Stop Recording from the phone.
+   - Show live OBS state (`OFFLINE`, `STANDBY`, `RECORDING`, `PAUSED`), elapsed recording timer, and last saved file path in real time (even if toggled from the PC).
+2. **Antigravity Chat Working Properly & Synced with Antigravity on PC:**
+   - Fix Antigravity chat so opening existing PC sessions, sending prompts, seeing thinking/tool cards, approving permissions, and creating new chats all work reliably.
+   - Store and load conversations from the **same Antigravity store** used by the desktop app so chats created or continued from mobile appear in Antigravity on the PC, and PC updates sync back to mobile.
+   - Verify and handle real-time behavior when a session is open on the PC at the same time (see §4.2 for the exact technical boundary and Phase 0 test).
 
 ---
 
-## 3. Decision 0: build our own, or use the official Remote Control?
+## 2. Verified Facts on This PC
 
-|                                                        | Official `agy remote-control`                                | Our ACP bridge in Core (this plan)             |
-| ------------------------------------------------------ | ------------------------------------------------------------ | ---------------------------------------------- |
-| Effort                                                 | ~0 (run `agy remote-control start`, open dashboard on phone) | Several phases of work                         |
-| Network                                                | Needs internet + Google sign-in on phone                     | Works on LAN; off-LAN via Tailscale (optional) |
-| Integrated with Core app (files, actions, telemetry)   | No, separate web app                                         | Yes, one app                                   |
-| Custom UX (approvals, git diff, notifications our way) | No                                                           | Yes                                            |
-| Other agents (Claude Code / Gemini CLI via ACP)        | No                                                           | Yes, later                                     |
+### OBS Studio
+- **Binary:** `C:\Program Files\obs-studio\bin\64bit\obs64.exe` (OBS 32.2.2, 64-bit Windows, NVENC configured, saves to `F:/Recording`).
+- **Built-in WebSocket (`obs-websocket` v5):** config exists at `%APPDATA%\obs-studio\plugin_config\obs-websocket\config.json` with:
+  - `server_port`: `4455`
+  - `auth_required`: `true` (password already configured)
+  - `server_enabled`: **`false`** (currently disabled)
+- **Backend dependency:** `websockets 17.4` is already installed in `backend\.venv`, so an async `obs-websocket` v5 client needs **zero new Python dependencies**.
 
-**Recommendation:** build the Core bridge, since that's the vision. You can still try the official Remote Control **today** as a stopgap. Rule: **never drive the same conversation from both at once** (see L1).
+### Antigravity (`agy` & existing Core chat bridge)
+The previous commit (`fcff0757`) added an ACP bridge (`backend/services/agent/*` and `mobile/src/app/(tabs)/chat/*`), **but it fails to sync with Antigravity Desktop and fails on PC sessions due to 5 verified bugs:**
+1. **Wrong data directory (`acp_client.py`):** `agy.exe acp --process-per-session` runs without `--app-data-dir`, so it defaulted to `%USERPROFILE%\.gemini\antigravity-cli` instead of `%USERPROFILE%\.gemini\antigravity` (where the desktop app stores all conversations).
+   - *Evidence in `backend/logs/agy_acp.log.6644` & `backend/data/agent.db`:* Mobile-created chat `4a414017-...` was saved only inside `antigravity-cli\conversations\`, while prompting desktop chat `ffdbcb55-...` failed with `LoadTrajectory LoadUnsafe failed: trajectory ... not found in any store` and saved an empty reply.
+   - *Verified fix test:* Running `agy.exe acp --app-data-dir antigravity` pointed directly to `%USERPROFILE%\.gemini\antigravity`, returned all 186 desktop sessions (including this active session `5cba6d19-b86f-43a2-8553-a799167d1492`), and `session/load` on `ffdbcb55-...` replayed 5 user turns, 51 thought chunks, 110 tool calls, and 5 assistant turns.
+2. **History never loaded on open (`hub.py`):** `ensure_session_loaded()` is only called when sending a prompt—never when opening a session or calling `GET /api/agent/sessions/{id}/history`. Opening any PC chat shows blank history.
+3. **Replay & thinking events dropped (`hub.py` + `agentStore.ts`):**
+   - During `session/load`, ACP replays `user_message_chunk`, `agent_thought_chunk`, `tool_call`, and `agent_message_chunk`. `hub.py` ignores `user_message_chunk`, listens for `"thought_chunk"` instead of `"agent_thought_chunk"`, and discards all replay updates because `_active_turns` is empty during load.
+   - `acp_client.py` dispatches notifications with `asyncio.create_task`, allowing chunks to execute out of order during replay/streaming.
+   - `agentStore.ts` drops thoughts that arrive before the first text chunk (no `else` branch), mutates objects in place, and ignores `user_message` / `config` events.
+4. **No PC → Phone refresh after initial load (`hub.py` + `agentSocket.ts`):** Once a session enters `_loaded_sessions`, `hub.py` never checks if the PC modified the `.db` file afterward. Also `agentSocket.ts` always re-subscribes with `since_seq: 0` (causing duplicate/missing events) and is only initialized when opening the Chat tab instead of app-wide in `_layout.tsx`.
+5. **Hardcoded permission IDs & static models (`PermissionCard.tsx` + `[sessionId].tsx`):** `PermissionCard` sends hardcoded `"allow"`/`"deny"` instead of rendering ACP's actual `options[].optionId`, and model selection is hardcoded instead of reading ACP's live `configOptions`.
 
 ---
 
-## 4. Architecture
+## 3. Part 1 — OBS Studio Control (Mobile Home Tab)
 
+### 3.1 Placement Choice: Dedicated Card on Mobile `HOME` Tab
+Placing an **`OBS STUDIO // RECORDER`** card directly on `HOME` (`mobile/src/app/(tabs)/index.tsx`, between `ForegroundCard` and `ActionGrid`) keeps all PC hardware/app controls in one glanceable deck without adding a 5th tab for just 4 buttons.
+
+```
++---------------------------------------------------+
+| OBS STUDIO // RECORDER         [● RECORDING 00:42]|
++---------------------------------------------------+
+| Status: Recording active (1920x1080 / MKV)        |
+| Output: F:\Recording\2026-11-16 23-59-01.mkv      |
+|                                                   |
+| [ OPEN OBS ]   [ ● REC ]   [ ❚❚ PAUSE ]  [ ■ STOP ]|
++---------------------------------------------------+
+```
+
+### 3.2 Backend Architecture
+- **New service `backend/services/obs_controller.py`:**
+  - **Binary discovery:** `CoreConfig.obs_path` → `C:\Program Files\obs-studio\bin\64bit\obs64.exe` → `C:\Program Files (x86)\...` → `shutil.which`.
+  - **Safe Windows launch:** `subprocess.Popen([obs_exe, ...], cwd=str(Path(obs_exe).parent))` (critical: OBS fails to find `locale/en-US.ini` if `cwd` is not `obs64.exe`'s folder). Supports optional `--minimize-to-tray`.
+  - **WebSocket v5 client (using `websockets 17.4`):**
+    - Reads host/port/password from Core config, falling back automatically to `%APPDATA%\obs-studio\plugin_config\obs-websocket\config.json` (never logs passwords).
+    - Performs `Hello` (`op: 0`) → SHA-256 `(password + salt) + challenge` → `Identify` (`op: 1`) → `Identified` (`op: 2`).
+    - Subscribes to `Outputs` events (`RecordStateChanged`) and queries `GetRecordStatus` (`outputActive`, `outputPaused`, `outputDuration`, `outputBytes`).
+    - Exposes clean methods: `open_obs(start_recording=False)`, `start_recording()`, `pause_recording()`, `resume_recording()`, `toggle_pause()`, `stop_recording()`, `get_status()`, `enable_obs_websocket_if_safe()`.
+  - **Smart edge cases:**
+    - Tapping **REC** when OBS is closed can either launch OBS + wait up to ~10s for WebSocket ready + start recording automatically (recommended), or prompt to open first.
+    - If OBS is running with `obs-websocket` disabled (`server_enabled: false`), status returns `state: "ws_disabled"` with a clear actionable message on mobile + a one-click **"Enable OBS WebSocket"** button in the local Web Control Panel (or auto-enable before Core launches OBS when `obs64.exe` is not running, with a `.bak` backup of OBS's `config.json`).
+    - Broadcasts `obs_status` updates over the existing `/ws/monitor` WebSocket whenever state changes (plus a 1s elapsed-time ticker while recording), so mobile stays in sync even if you press hotkeys on the PC.
+- **New routes `backend/api/routes_obs.py`** (protected by `require_mobile_auth`):
+  - `GET /api/obs/status`
+  - `POST /api/obs/open`
+  - `POST /api/obs/record/start`
+  - `POST /api/obs/record/pause`
+  - `POST /api/obs/record/resume`
+  - `POST /api/obs/record/stop`
+- **Config additions (`CoreConfig` in `backend/core/config_manager.py`):**
+  - `obs_path: Optional[str] = None`
+  - `obs_ws_host: str = "127.0.0.1"`
+  - `obs_ws_port: Optional[int] = None` (auto-reads OBS's `config.json` when `None`)
+  - `obs_ws_password: Optional[str] = None` (auto-reads OBS's `config.json` when `None`)
+  - `obs_auto_enable_ws: bool = True` (only modifies OBS `config.json` while `obs64.exe` is stopped, after writing `.bak`)
+
+### 3.3 Mobile UI (`mobile/`)
+- **`mobile/src/components/ObsControlCard.tsx`:**
+  - Displays connection/recording badge (`OFFLINE` / `STANDBY` / `RECORDING` / `PAUSED` / `WS DISABLED`), live recording duration counter, and last saved recording path.
+  - 4 primary tactile actions matching the request:
+    1. **OPEN OBS** (launches OBS; or brings/checks OBS status if already open)
+    2. **REC / RESUME** (starts recording when standby/offline, or resumes when paused)
+    3. **PAUSE** (pauses active recording)
+    4. **STOP** (stops recording and shows saved file name/path)
+  - Listens to `obs_status` events from `services/ws.ts` + refreshes via `GET /api/obs/status` on Home pull/mount.
+
+---
+
+## 4. Part 2 — Antigravity Chat Fix & PC ↔ Phone Sync
+
+### 4.1 Architecture Fix: Shared Antigravity Store + Proper Replay
 ```mermaid
 flowchart LR
-  subgraph Phone["Phone (Expo app)"]
-    UI["Chat tab: Projects / Sessions / Conversation"]
-    Store["agentStore (zustand) + SQLite cache"]
-    Sock["agentSocket (single app-wide WS)"]
-    UI --> Store --> Sock
-  end
-  subgraph PC["PC: FastAPI backend"]
-    WS["/ws/agent (multiplexed)"]
-    REST["/api/agent/*"]
-    Hub["AgentHub: sessions, turns, permissions, fan-out"]
-    Proj["ProjectIndex: cwd normalize + group + allowlist"]
-    DB["EventStore (SQLite)"]
-    ACP["AcpClient: JSON-RPC over stdio, reader threads"]
-    WS --> Hub
-    REST --> Hub
-    Hub --> Proj
-    Hub --> DB
-    Hub --> ACP
-  end
-  AGY["agy.exe acp --process-per-session"]
-  Conv["Antigravity conversation store (shared with desktop app)"]
-  Sock <-->|"LAN ws://"| WS
-  ACP <-->|"stdin / stdout NDJSON"| AGY
-  AGY --> Conv
+  Phone["Phone Chat Tab<br/>(App-wide WS + Zustand)"] <-->|"LAN /ws/agent + REST"| Hub["Core Backend AgentHub<br/>(Ordered queue + DB cache + mtime check)"]
+  Hub <-->|"stdio JSON-RPC"| ACP["agy.exe acp<br/>--app-data-dir antigravity"]
+  ACP <-->|"Reads & writes same store"| Store[("%USERPROFILE%\.gemini\antigravity\<br/>conversations/*.db + summaries.db")]
+  Desktop["Antigravity Desktop App"] <-->|"Reads & writes same store"| Store
 ```
 
-### Prompt + approval sequence
+### 4.2 Important Architectural Reality & Phase 0 Gate Test ("Appear on PC at the same time")
+Before writing production code, we need to be 100% transparent about how `agy acp` interacts with the **already-open** Antigravity Desktop window:
+- **What `--app-data-dir antigravity` guarantees:** Every new chat (`session/new`) and every prompt (`session/prompt`) sent from the phone is written into `%USERPROFILE%\.gemini\antigravity\conversations\<id>.db` and `conversation_summaries.db` — the exact store Antigravity Desktop uses. No more isolated `antigravity-cli` folder.
+- **What has a documented boundary (`agy help acp`):** `agy acp` spawns its own Language Server child process; there is no documented `agy` flag to inject messages directly into the already-running Desktop IDE window's in-memory UI state.
+- **Phase 0 Gate Test (1 quick turn on a throwaway session before Phase 2):**
+  1. Open a throwaway conversation in Antigravity Desktop, then send 1 prompt to that same session via `agy acp --app-data-dir antigravity`.
+  2. Observe whether the open Desktop chat tab refreshes live on screen or requires switching away/back (or reopening) to display the new turn, and confirm SQLite WAL handles both without corruption.
+  3. Create a `session/new` via `agy acp --app-data-dir antigravity` and verify it appears under the correct project in the Antigravity Desktop sidebar.
+- **Note on `agy remote-control`:** If the Phase 0 test confirms that Antigravity Desktop only refreshes disk changes on thread switch/reopen (and does not live-stream into an already-open tab), the only official Antigravity mechanism that mirrors a single active desktop window in real time is Google's `agy remote-control start` (which runs in a mobile browser over Google cloud, outside Core). We can optionally add an `agy remote-control` status/toggle helper if you want it alongside Core's LAN chat, while Core's Chat tab gives you full native LAN control over all projects/sessions in the shared store.
 
-```mermaid
-sequenceDiagram
-  participant P as Phone
-  participant H as AgentHub
-  participant A as agy acp
-  P->>H: prompt(session, client_msg_id, text)
-  H->>H: dedupe id, check busy / stale, persist user msg
-  H->>A: session/prompt
-  A-->>H: session/update tool_call (pending)
-  A->>H: session/request_permission (id "1")
-  H-->>P: event permission_request (seq 42)
-  Note over P: phone may be offline, request waits, local notification
-  P->>H: permission_response(request 42, allow)
-  H->>A: result {outcome: selected, optionId: allow}
-  A-->>H: tool_call_update completed, agent_message_chunk...
-  H-->>P: throttled chunk events (seq 43..n)
-  A->>H: prompt result {stopReason, usage}
-  H-->>P: turn_ended(stopReason, usage)
-```
+### 4.3 Backend Fixes (`backend/services/agent/*`, `backend/api/*`)
+1. **`agy_locator.py` & `acp_client.py`:**
+   - Pass `--app-data-dir`, `cfg.agy_app_data_dir` (default `"antigravity"`) to `agy.exe acp`.
+   - Replace per-notification `asyncio.create_task(...)` with a single ordered `asyncio.Queue` dispatcher so `session/update` notifications are strictly sequential.
+   - Reject pending futures immediately on process exit; expose clear auth/version status in `/api/agent/status`.
+2. **`store.py`:**
+   - Add an explicit integer `turn_order` / `seq` column (or monotonic timestamp + upsert) to `messages` so replayed conversations preserve exact turn order instead of colliding on `_iso_now()`.
+   - Track `last_synced_mtime` / `last_synced_updated_at` per session so we know when the PC updated a conversation on disk.
+   - Add `replace_session_history(...)` for clean atomic re-sync from ACP `session/load` replay while preserving local `events` sequence continuity.
+3. **`hub.py`:**
+   - Handle **all** ACP `sessionUpdate` types during both replay and live turns:
+     - `user_message_chunk`
+     - `agent_thought_chunk` (and legacy alias `thought_chunk`)
+     - `tool_call` (plus `tool_call_update` when present)
+     - `agent_message_chunk`
+     - `session_info_update`, `available_commands_update`, `config_option_update`, `current_mode_update`
+   - Implement `sync_session_if_stale(session_id, cwd)`:
+     - Checks `%USERPROFILE%\.gemini\antigravity\conversations\<session_id>.db` (+ `.db-wal`) mtime and/or `session/list` `updatedAt`.
+     - If never synced or modified on disk by the PC since Core's last turn, runs `session/close` (if loaded) + `session/load`, buffers the full replay, persists consolidated turns + tools into `agent.db`, captures live `configOptions` (`model`, `thought_level`, `mode`), and broadcasts `history_synced` to subscribed sockets.
+   - Call `sync_session_if_stale` automatically on:
+     - `GET /api/agent/sessions/{id}/history`
+     - WS `subscribe`
+     - `submit_prompt` (before prompting, so Core's ACP worker never prompts stale state if you just typed on the PC).
+   - Also validate `create_session` `cwd` against existing project roots / valid non-system directories (fixing L24) and pass `configOptions` back to mobile.
+   - Add `POST /api/agent/sessions/{id}/sync` so mobile can force-pull fresh PC state anytime with one tap.
+4. **`projects.py`:**
+   - Filter out all `%USERPROFILE%\.gemini\*` internal folders cleanly.
+   - Improve `openOnPc` detection and also read `antigravity\conversations\<sid>.db-wal` recency to flag recently active PC sessions.
 
----
-
-## 5. Backend design
-
-### 5.1 New files
-
-```
-backend/services/agent/
-  agy_locator.py   # find agy.exe (config > PATH > %USERPROFILE%\.gemini\bin), read version
-  acp_client.py    # JSON-RPC stdio client: thread readers, request futures, notification/request dispatch
-  events.py        # ACP update -> phone event mapping, truncation, quota detection
-  projects.py      # cwd normalizer, grouping, noise filter, allowlist, project_id hashing
-  store.py         # SQLite event store (backend/data/agent.db, gitignored)
-  hub.py           # AgentHub: loaded-session LRU, turn state machine, permission registry, queue, fan-out
-backend/api/routes_agent.py   # REST
-backend/api/ws_agent.py       # /ws/agent
-backend/tests/fake_acp_agent.py  # scripted ACP agent for tests (no quota)
-backend/tests/test_projects.py, test_acp_client.py, test_hub.py
-```
-
-### 5.2 AcpClient rules (each one fixes a real failure mode)
-
-1. **Spawn with argv, never `shell=True`:** `[agy, "acp", "--process-per-session", "--log-file", logs/agy_acp.log]`. Use `cwd=%USERPROFILE%` and `creationflags=CREATE_NO_WINDOW`.
-2. **Thread-based IO, not asyncio subprocess.** This works under any event loop (F16). Blocking reader threads push into the loop with `loop.call_soon_threadsafe`.
-3. **Read stdout line by line with no 64 KB cap.** `asyncio.StreamReader` defaults to a 64 KB limit, and tool outputs plus the 109-command list are bigger than that.
-4. **Always drain stderr** into the log file. A full stderr pipe would deadlock agy.
-5. **Serialize stdin writes with a lock.** Concurrent writes would interleave JSON lines.
-6. Use **UTF-8 explicitly** in both directions (`⚠`, emoji, non-ASCII paths).
-7. **Echo the id back exactly as received** (string or int, F15) when answering agent→client requests.
-8. Reply to **unknown agent→client methods** (`fs/*`, `terminal/*`, …) with JSON-RPC error `-32601` so the agent never hangs. Declare `fs: false, terminal: false` in `initialize`.
-9. **Tolerant parsing**: Pydantic models with `extra="allow"`, accept both camel- and snake-case keys.
-10. **Supervisor**: on process exit, restart with backoff (1, 2, 5, 10, 30 s). Mark in-flight turns `interrupted`, cancel pending permissions, and re-load sessions lazily.
-11. **Shutdown**: kill the whole process tree (`psutil` children), because `--process-per-session` spawns workers.
-12. **Log the version** from `agentInfo.version` at handshake. agy auto-updates (`agy.exe.old.*`), so the protocol can drift. Log a warning if the version changed since the last run.
-
-### 5.3 AgentHub behavior
-
-- **Turn state machine per session:** `idle → running → (awaiting_permission ↔ running) → idle`.
-- **One turn at a time per session.** A prompt sent while a turn is running goes into a **queue of up to 3**, shown on the phone as "queued". It is not rejected silently.
-- **Global cap** on concurrent running turns (default 2), to protect quota and CPU.
-- **Dedupe:** every prompt carries a `client_msg_id` (UUID). A repeat within 10 min is ignored, which makes reconnect-resends safe.
-- **Staleness check before each phone prompt (L1):** refresh `session/list`. If `updatedAt` is newer than our last known value, the desktop changed it, so call `session/close` + `session/load` before prompting. If it was updated in the **last 2 min**, send the phone a "this conversation is active on the PC" warning and require a confirm tap.
-- **Loaded-session LRU** (default 6). Least recently used sessions get `session/close`, which keeps agy memory bounded.
-- **Permission registry:** pending requests are stored in the DB. They survive phone disconnects, but not an agy restart (they get marked cancelled). The first phone to answer wins, and the others get `permission_resolved`. Optional `permission_timeout_s` (default **0 = wait forever**; never auto-allow).
-- **Quota detection (F11):** if a turn's agent text starts with `⚠` or contains `quota reached`, emit a `warning` event with kind `quota`. The phone then shows a banner with a "switch model" button.
-- **Default model per new session** from config (`agent_default_model`), because the agy default is currently quota-exhausted.
-- **Keep the PC awake while a turn runs:** `SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED)`, released when idle.
-
-### 5.4 Event model (phone-facing, versioned `v: 1`)
-
-Each session has a monotonically increasing `seq`. Event kinds:
-`user_message`, `agent_chunk`, `thought_chunk`, `tool_call`, `tool_update`, `plan`, `permission_request`, `permission_resolved`, `turn_started`, `turn_ended {stopReason, usage}`, `title`, `config`, `commands`, `warning`, `error`, `queued`.
-
-- **Storage:** while a turn runs, chunks live in an in-memory buffer (so a reconnecting phone can catch up mid-turn). On `turn_ended`, chunks are **consolidated** into one message row. The DB stores messages and tool cards, not individual tokens.
-- **Tool output truncation:** the phone gets a 4 KB preview plus `has_more`. The full output can be fetched through REST.
-- **History for PC-made conversations:** on first open, run `session/load`, convert the replay into consolidated rows, and record `history_synced_at`. Re-sync if the list's `updatedAt` is newer. Serve it **paginated** (last 50 messages, then older on scroll).
-
-### 5.5 API
-
-REST (all require the full auth token, see §8):
-
-| Method | Path                                              | Purpose                                                                                                       |
-| ------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/agent/status`                               | agy found? version, ACP alive, auth OK / "login required on PC", running turns                                |
-| GET    | `/api/agent/projects`                             | grouped projects: `project_id`, name, path, session count, last activity, `running`, `open_on_pc` (heuristic) |
-| GET    | `/api/agent/projects/{project_id}/sessions`       | sessions newest-first + per-session state (idle/running/awaiting approval)                                    |
-| POST   | `/api/agent/sessions`                             | `{project_id, model?, mode?}` → `session/new` (only in allowlisted roots)                                     |
-| GET    | `/api/agent/sessions/{id}/history?before=&limit=` | paginated consolidated history                                                                                |
-| GET    | `/api/agent/sessions/{id}/tool/{tool_call_id}`    | full tool output                                                                                              |
-| GET    | `/api/agent/sessions/{id}/changes`                | (Phase 6) `git status` + per-file diff inside project root                                                    |
-
-WebSocket `/ws/agent` (one per app, multiplexed):
-
-- Client → server: `auth {token}` (**first frame**, not in the query string), `subscribe {session_id, since_seq}`, `unsubscribe`, `prompt {session_id, client_msg_id, text, images?}`, `cancel {session_id}`, `permission_response {session_id, request_id, option_id}`, `set_option {session_id, config_id, value}`, `ping`.
-- Server → client: `event {session_id, seq, ts(ISO UTC), kind, payload}`, `session_state`, `pong`, `error`.
-- `project_id` = short hash of the normalized path, so **raw paths never travel in URLs**.
-
-### 5.6 ProjectIndex (fixes F5/F6)
-
-- **Normalize:** URL-decode → strip the leading `/` before a drive letter → `\` separators → `os.path.normcase` → `os.path.normpath`. Unit tests use the **real strings from F6**.
-- **Hide noise:** cwds under `%USERPROFILE%\.gemini\` (scratch/brain dirs), missing cwds, and folders that no longer exist (shown greyed out under "archived").
-- **Cache:** `session/list` for 10 s. Search by title on the backend.
-- **Allowlist:** new sessions are only allowed under `agent_project_roots` (config, editable in the web panel) **or** in a folder that already has Antigravity sessions. System folders are never allowed.
-- **"Open on PC" (heuristic):** enumerate Antigravity window titles via `pygetwindow` (it's already a dependency) and match them to project names. The UI labels it as a best guess.
-
-### 5.7 Config additions (`CoreConfig`)
-
-`agent_enabled=true`, `agy_path=""` (auto), `agent_project_roots=[]`, `agent_default_model="claude-sonnet-5-5"`, `agent_default_mode="default"`, `agent_max_loaded_sessions=6`, `agent_max_concurrent_turns=2`, `agent_permission_timeout_s=0`, `legacy_shell_agents_enabled=false`.
+### 4.4 Mobile Fixes (`mobile/src/`)
+1. **App-wide socket lifecycle (`src/app/(tabs)/_layout.tsx` + `src/services/agentSocket.ts`):**
+   - Initialize `agentSocket.init(pcIp, pcPort, authToken)` in `TabLayout` instead of only inside `chat/index.tsx`, so approvals/notifications and active streams stay alive across all tabs.
+   - Track `lastSeqBySession` in `agentStore` and pass real `since_seq` on reconnect instead of `0`.
+   - Queue/notify cleanly if user hits Send while socket is reconnecting instead of dropping silently.
+2. **State & streaming fixes (`src/store/agentStore.ts`):**
+   - Stop mutating messages/tools in place (return immutable copies).
+   - Support `agent_thought_chunk` arriving *before* `agent_message_chunk` (create the streaming assistant bubble immediately on first thought/tool/text chunk).
+   - Handle `user_message` (deduped by `id` with optimistic message), `config` (`configOptions` updates), and `history_synced` (refresh thread cleanly when PC updates the session).
+   - Store `configOptionsBySession` so the UI displays real available models/thinking levels/modes from ACP.
+3. **Chat UI improvements (`src/app/(tabs)/chat/*` & `src/components/agent/*`):**
+   - `PermissionCard.tsx`: render the actual `permission.options` (`optionId`, `name`) returned by ACP instead of hardcoded `"allow"`/`"deny"`.
+   - `[sessionId].tsx`:
+     - Populate model, thinking level, and mode chips dynamically from ACP's `configOptions` (fallback to defaults if offline).
+     - Add a **Sync** button (`RotateCcw` icon is already imported!) to pull latest PC messages immediately, plus display a subtle banner if the session was recently updated on PC.
+     - Fix auto-scroll so it doesn't yank the user back to the bottom when scrolling up to read older messages.
+     - Add local notifications (via `expo-notifications`) when `permission_request` or `turn_ended` arrives while on another tab / app foregrounded.
+   - `chat/index.tsx` & `[projectId].tsx`:
+     - Keep `New` session modal aligned with ACP's real model IDs (`claude-sonnet-5-5`, `gemini-4-hydrogen`, `gemini-3.8-flash`, etc.) and refresh project/session state on focus.
 
 ---
 
-## 6. Mobile design
+## 5. Planned File Changes
 
-### 6.1 Navigation (Expo Router)
+### Backend
+- `backend/core/config_manager.py` — add `obs_*` and `agy_app_data_dir` config fields.
+- `backend/services/obs_controller.py` *(new)* — OBS discovery, safe launch, `obs-websocket` v5 client, state tracking, optional safe `server_enabled` helper.
+- `backend/api/routes_obs.py` *(new)* — `/api/obs/*` endpoints.
+- `backend/api/websockets.py` — push `obs_status` updates over `/ws/monitor`.
+- `backend/main.py` — register `obs_router` and clean shutdown of OBS WS client.
+- `backend/services/agent/acp_client.py` — `--app-data-dir antigravity`, ordered async update queue, exit future rejection.
+- `backend/services/agent/store.py` — ordered message persistence, `last_synced_mtime`, atomic history sync.
+- `backend/services/agent/hub.py` — replay buffering (`user_message_chunk`, `agent_thought_chunk`, `tool_call`, `agent_message_chunk`), PC staleness sync, `configOptions` forwarding, `cwd` validation.
+- `backend/services/agent/projects.py` — filter `.gemini` internal dirs, expose active `.db-wal` PC activity hint.
+- `backend/api/routes_agent.py` — trigger `sync_session_if_stale` on `/history`, add `POST /sessions/{id}/sync`, return `configOptions`.
+- `backend/web_panel/index.html` & `app.js` *(light addition)* — show OBS status + quick "Enable OBS WebSocket" button if needed.
+- `backend/tests/test_obs_controller.py` *(new)* & updates to `backend/tests/test_agent_core.py` / `test_agent_api.py` / `test_agent_ws_e2e.py`.
 
-Replace `src/app/(tabs)/chat.tsx` with a stack inside the tab:
-
-```
-src/app/(tabs)/chat/_layout.tsx           # Stack
-src/app/(tabs)/chat/index.tsx             # Projects (running badge, pending-approval badge, search)
-src/app/(tabs)/chat/[projectId].tsx       # Sessions in project + "New conversation"
-src/app/(tabs)/chat/session/[sessionId].tsx  # Conversation
-```
-
-### 6.2 Services and state
-
-- `services/agentSocket.ts`: **one app-wide socket** owned by the tab layout, not per screen. Events keep arriving while you're on HOME/FILES. It uses exponential backoff with jitter, a 20 s heartbeat, reconnect on `AppState → active`, and re-subscribe with `since_seq`.
-- `services/agentApi.ts`: REST calls.
-- `store/agentStore.ts`: **zustand** (new tiny dependency). The current Context store re-renders the whole tree on every token, so it can't carry streaming.
-- `services/agentCache.ts`: expo-sqlite cache of projects, sessions and messages, so the last state is viewable offline. The server stays the source of truth.
-
-### 6.3 Conversation screen components (`components/agent/`)
-
-- `MessageBubble`: markdown with horizontally scrollable code blocks and a copy button. Markdown library: **VERIFY** `react-native-markdown-display` works with React 19 / RN 0.88. Fallback: `marked` tokens → our own renderer.
-- `ToolCallCard`: collapsible, shows kind icon (execute/edit/read), title, status, and a 4 KB output preview with "show full".
-- `PermissionCard`: large **Allow / Deny** buttons with the exact command or path. It pins to the bottom until answered.
-- `TurnBar`: "Working… 1m12s", queued count, **Stop** button (`session/cancel`).
-- `Composer`: multiline input, slash-command autocomplete from `commands`, chips for **model / thinking / mode**, and (Phase 5) image attach (resize ≤1600 px JPEG).
-- Banners: "active on PC", "quota reached → switch model", "PC offline", "login required on PC".
-- **Performance:** batch chunks and flush every ~80 ms, memoize bubbles, use an inverted `FlatList`.
-- **Android keyboard:** `KeyboardAvoidingView behavior="height"`. The current `undefined` lets the composer get covered.
-
-### 6.4 Notifications
-
-Local notifications through the existing `expo-notifications` for `permission_request`, `turn_ended` and `quota` warnings, **when the app is backgrounded but alive**. Tapping one deep-links to the session.
-
-> [!WARNING]
-> If Android kills the app or socket, **no notification arrives**. A LAN-only setup has no push channel. Real push needs internet + Expo Push/FCM (optional Phase 7). Until then, pending approvals simply wait on the PC and show up as soon as you reopen the app.
+### Mobile
+- `mobile/src/components/ObsControlCard.tsx` *(new)* — OBS Open / Rec / Pause-Resume / Stop UI card.
+- `mobile/src/app/(tabs)/index.tsx` — mount `ObsControlCard` on Home tab.
+- `mobile/src/services/api.ts` — add OBS API methods (`getObsStatus`, `openObs`, `startObsRecording`, `pauseObsRecording`, `resumeObsRecording`, `stopObsRecording`).
+- `mobile/src/services/ws.ts` — handle `obs_status` WebSocket events.
+- `mobile/src/app/(tabs)/_layout.tsx` — initialize `agentSocket` app-wide + handle agent local notifications.
+- `mobile/src/services/agentSocket.ts` — real `since_seq` reconnect, offline send warning/handling.
+- `mobile/src/services/agentApi.ts` — pass `cwd`/sync on history fetch, add `syncSessionHistory`.
+- `mobile/src/store/agentStore.ts` — immutable updates, early `agent_thought_chunk`, `user_message` dedupe, `configOptionsBySession`, `history_synced`.
+- `mobile/src/components/agent/PermissionCard.tsx` — render dynamic ACP `options`.
+- `mobile/src/app/(tabs)/chat/session/[sessionId].tsx` & `[projectId].tsx` — dynamic models/modes/thinking, manual sync button, smart scroll.
 
 ---
 
-## 7. Loophole register (failure modes → mitigation)
+## 6. Verification Plan
 
-| ID     | Loophole                                                                                                                                                   | Mitigation                                                                                                                                                             |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **L1** | **Same conversation driven from desktop and phone at once.** Two runtimes could diverge or corrupt it. The desktop UI may not live-refresh phone messages. | Staleness check + re-load before each prompt, "active on PC" warning and confirm, docs rule "one driver at a time". **Phase 0 gate test** on a throwaway conversation. |
-| L2     | The agent waits on an approval while the phone is offline, so the turn stalls forever.                                                                     | Persisted pending approvals, badge, local notification. Optional timeout → **deny** (never allow). Mode `accept-edits` per session lowers the number of prompts.       |
-| L3     | Phone disconnects mid-turn.                                                                                                                                | The turn keeps running on the PC. `seq` + `since_seq` catch-up, in-memory live buffer.                                                                                 |
-| L4     | Duplicate prompt after reconnect.                                                                                                                          | `client_msg_id` dedupe.                                                                                                                                                |
-| L5     | Prompt sent while a turn is running.                                                                                                                       | Per-session queue (max 3) + visible "queued" state.                                                                                                                    |
-| L6     | Backend restart mid-turn kills agy.                                                                                                                        | Turn marked `interrupted` and shown on the phone. Sessions re-load lazily. Documented.                                                                                 |
-| L7     | agy crash or auto-update.                                                                                                                                  | Supervisor restart + version log. Pending permissions cancelled and shown as such.                                                                                     |
-| L8     | stderr pipe deadlock / 64 KB line limit / interleaved stdin writes / Selector loop.                                                                        | AcpClient rules 2–5 (§5.2).                                                                                                                                            |
-| L9     | agy not on PATH, or the backend runs **as a different or elevated user**, so agy can't see its login.                                                      | `agy_locator`. `/status` reports "login required: run `agy` once on the PC". **Backend must run as the same Windows user.** No automated login.                        |
-| L10    | Quota exhaustion looks like a normal reply (F11).                                                                                                          | Pattern detection → `quota` warning + model switch. Configurable default model.                                                                                        |
-| L11    | Token cost: ~44k tokens per turn (F13).                                                                                                                    | Show usage per turn in the UI so the cost is visible. Concurrency cap.                                                                                                 |
-| L12    | cwd format chaos, ignored filter, 181+ sessions, scratch noise (F5/F6).                                                                                    | ProjectIndex (§5.6) with tests on real data.                                                                                                                           |
-| L13    | Huge history replays (hundreds of steps, MBs).                                                                                                             | Consolidate, paginate, truncate tool output, cache in DB.                                                                                                              |
-| L14    | agy memory growth with many loaded sessions.                                                                                                               | LRU `session/close`.                                                                                                                                                   |
-| L15    | Unknown or new protocol fields and methods.                                                                                                                | Tolerant models, `-32601` for unknown requests, `v` on phone events.                                                                                                   |
-| L16    | Re-render storms on token streams.                                                                                                                         | Chunk batching, zustand selectors, memoized rows.                                                                                                                      |
-| L17    | Android background socket death, no push.                                                                                                                  | Reconnect on foreground. Documented limitation. Optional push phase.                                                                                                   |
-| L18    | Multiple phones / tabs.                                                                                                                                    | Fan-out per subscription. First permission answer wins, the rest get `permission_resolved`.                                                                            |
-| L19    | PC sleeps mid-turn or while away.                                                                                                                          | `SetThreadExecutionState` during turns. Recommend Antigravity's "keep computer awake" setting.                                                                         |
-| L20    | Large image uploads.                                                                                                                                       | Resize/compress on the phone, max 4 MB, server-side size check.                                                                                                        |
-| L21    | Time zones / clock drift.                                                                                                                                  | ISO UTC from the server, formatted on the phone.                                                                                                                       |
-| L22    | Slash commands might not expand over ACP.                                                                                                                  | **VERIFY** in Phase 0 (`/plan` test). If they don't expand, autocomplete inserts plain text with a hint.                                                               |
-| L23    | Phone-created sessions might not appear under the right project in the desktop sidebar.                                                                    | **VERIFY** in Phase 0. If not, document it. Still resumable via `--conversation`.                                                                                      |
-| L24    | Path traversal / arbitrary cwd for new sessions.                                                                                                           | `project_id` hash lookup only + allowlist (§5.6).                                                                                                                      |
+1. **Phase 0 Gate (before finalizing chat sync behavior):**
+   - Run a 1-turn check on a throwaway conversation with `--app-data-dir antigravity` while Antigravity Desktop is open, and record whether the Desktop UI updates live vs on conversation switch/reload.
+2. **Backend Automated Tests (`backend/.venv\Scripts\python.exe -m pytest`):**
+   - Unit tests for `obs_controller` against a mock `obs-websocket` v5 server (auth challenge/salt handshake, `StartRecord`, `PauseRecord`, `ResumeRecord`, `StopRecord`, `RecordStateChanged` events, `ws_disabled` handling).
+   - Unit & E2E tests for ACP replay parsing (`user_message_chunk`, `agent_thought_chunk`, `tool_call`, `agent_message_chunk`), ordered queue, `since_seq` reconnect without duplicates, and stale-history re-sync.
+3. **Mobile Static Check:**
+   - `cd mobile && npm run typecheck` must pass with 0 errors.
+4. **Live PC + Phone Verification:**
+   - Verify OBS launch + Start / Pause / Resume / Stop recording from mobile Home tab produces an `.mkv` file in `F:\Recording` and live timer updates.
+   - Verify opening an existing PC Antigravity thread shows full history on mobile, sending a prompt works and appears in Antigravity Desktop, and creating a new chat from mobile appears in Antigravity Desktop under the right project.
 
 ---
 
-## 8. Security (the phone becomes a remote control for an agent that runs commands, so this is mandatory)
+## 7. Decisions Needed Before I Proceed
 
-Existing issues found during analysis:
-
-1. 🔴 **Secrets are committed to git.** `backend/.env`, `backend/config.json` (auth token + PIN), `mobile/.env` and **all of `mobile/node_modules`** are tracked even though `.gitignore` lists them. Fix: `git rm -r --cached` those paths and **rotate the token and PIN**, because the old ones live on in history. Never push.
-2. 🔴 **Command injection** in `cli_runner.py` (`agy {prompt}` with `shell=True`) and the `powershell` chat target (raw RCE). Fix: delete the antigravity path and put shell targets behind `legacy_shell_agents_enabled=false`.
-3. 🔴 **The PIN works as a full token everywhere** (`verify_token_value`), has only ~900k combinations, and there's **no rate limiting**, so it can be brute-forced on the LAN. Fix: agent endpoints accept **only the 128-bit `auth_token`**. The PIN is used once for pairing (`POST /api/pair` → token), with a lockout (5 failures → 60 s, doubling).
-4. 🟠 `require_local_admin` **accepts the mobile bearer token**, so the phone can add quick actions containing arbitrary commands. Fix: admin is localhost-only.
-5. 🟠 The token is sent in the **WS query string**, where uvicorn access logs can record it. Fix: first-frame `auth` on `/ws/agent`.
-6. 🟠 A default PIN `610105` is hard-coded as `DEFAULT_TOKEN` in `useConnectionStore.tsx`. Fix: remove it and require pairing.
-7. 🟡 Plain `ws://` means anyone on the same Wi-Fi can read prompts and replies. **Decision:** accept this on your trusted home LAN. For any other network, use **Tailscale** (encrypted, no code changes). No port forwarding, ever.
-8. Agent policy: the phone can pick `default | accept-edits | plan` only. **`--dangerously-skip-permissions` is never exposed.** Antigravity's own permission settings still apply.
-9. Logs: prompts are truncated to 80 chars, tool outputs are never logged, and agy logs go to `backend/logs/` (gitignored).
-
----
-
-## 9. Phases (each phase ends in something testable)
-
-### Phase 0: Hygiene + verification gates (S)
-
-- Untrack secrets and `node_modules`, rotate credentials, add `backend/data/` and `backend/logs/` to `.gitignore`.
-- **Gate tests** (written up in `docs/acp-findings.md`):
-  - L1: open a throwaway conversation in the desktop app, send one ACP prompt, and see whether the desktop shows it, whether it breaks, and what happens if both send.
-  - L23: does an ACP `session/new` show under the right desktop project?
-  - L22: does `/plan` expand over ACP?
-  - Does `session/cancel` stop a running tool cleanly?
-  - Is the markdown library compatible (§6.3)?
-- **Done when:** every VERIFY item has a recorded answer, and the plan has been adjusted for any surprises.
-
-### Phase 1: ACP bridge core (M)
-
-- `agy_locator`, `acp_client`, `fake_acp_agent.py` (scripted: chunks, tool call, permission, quota text, giant line, crash).
-- pytest: handshake, >64 KB line, stderr flood, permission round trip, unknown-method reply, crash → restart.
-- **Done when:** tests pass against the fake agent, and a manual script lists sessions and runs a prompt against the real `agy`.
-
-### Phase 2: Hub, store, API, security (M/L)
-
-- `projects.py` (+ tests with the real F6 strings), `store.py`, `hub.py`, `routes_agent.py`, `ws_agent.py`, config fields, pairing + rate limit, admin localhost-only, legacy path gating.
-- **Done when:** a Python test client covers list projects → open session → prompt → approve → stream → reconnect with `since_seq` → no duplicates. Bad token / PIN brute force gets locked out.
-
-### Phase 3: Mobile: browse (M)
-
-- Chat stack routes, `agentSocket`, `agentApi`, `agentStore`, `agentCache`. Projects screen, Sessions screen, read-only paginated history.
-- **Done when:** the phone shows real projects and sessions grouped correctly, opens a PC-made conversation and scrolls its history. `npm run typecheck` passes.
-
-### Phase 4: Mobile: live chat (L)
-
-- Composer, streaming bubbles, ToolCallCard, PermissionCard, TurnBar + Stop, model/mode/thinking chips, queued state, banners (active-on-PC, quota, offline, login).
-- **Done when (on a real phone):** start a new conversation in Core, ask the agent to create a file, approve from the phone, watch it finish, lock the phone mid-turn, reopen and see the full catch-up, and see the conversation in the desktop app.
-
-### Phase 5: Polish (M)
-
-- Local notifications + deep links, slash autocomplete, image attachments, session search, per-turn usage display, remove legacy `/ws/chat` + old chat screen.
-
-### Phase 6: Project insight (M)
-
-- "Changes" view per session: `git status` + per-file diff (read-only, project root only). Optional project file browser reusing `routes_files` restricted to the project root. "Open on PC" indicator.
-
-### Phase 7: Optional
-
-- Off-LAN through Tailscale (docs only), Expo push (needs internet), more ACP agents (Claude Code via its ACP adapter, `gemini --experimental-acp`) through the same `AcpClient`.
-
----
-
-## 10. Testing strategy
-
-- **Backend:** pytest + `fake_acp_agent.py`, so the full suite costs **zero quota**. One opt-in `@pytest.mark.live` smoke test runs against real agy.
-- **Contract:** the phone event schema lives in `backend/services/agent/events.py` with matching TS types in `mobile/src/types/agent.ts`. A test diffs the two lists of event kinds.
-- **Mobile:** `npm run typecheck`, plus a manual checklist per phase (the Done-when lines above) on a physical Android device over LAN.
-- **Regression:** the existing HOME/FILES/sync features stay untouched. Smoke-check after Phase 2 (auth changes) and Phase 3 (tab restructuring).
-
----
-
-## 11. Decisions I need from you (recommended defaults in **bold**)
-
-1. **Build our own bridge** vs use official Remote Control → **build** (and try the official one meanwhile if you like).
-2. Network scope → **LAN only now, Tailscale later** vs internet relay.
-3. Default approval mode for phone-started sessions → **`default` (ask for every command/edit)** vs `accept-edits`.
-4. Default model for new sessions → **Claude Sonnet 5.5** (Gemini 4 Argon is quota-exhausted until ~2 days from now).
-5. Legacy chat targets (PowerShell, ChatGPT/Gemini/Claude web via Playwright) → **remove from chat tab** (keep code disabled) vs keep.
-6. OK to **untrack the committed secrets and rotate token/PIN** in Phase 0 → **yes** (the phone will need re-pairing once).
-
-## 12. Out of scope (for now)
-
-Controlling the desktop app's UI directly (screen automation or undocumented local APIs, which are fragile and unsanctioned), voice input, iOS build, multi-user accounts.
+1. **OBS Placement:** Are you happy with the **OBS Recorder card on the `HOME` tab**, or would you still prefer a dedicated 5th **`OBS`** tab? *(Default: `HOME` tab)*
+2. **OBS WebSocket Auto-Enable:** Currently `obs-websocket` is `server_enabled: false` in your OBS config. Should Core **automatically set `server_enabled: true`** in `%APPDATA%\obs-studio\plugin_config\obs-websocket\config.json` (only while OBS is closed, with a `.bak` backup), or would you rather toggle it manually inside OBS (`Tools → WebSocket Server Settings`)? *(Default: auto-enable safely when OBS is closed)*
+3. **Click `REC` while OBS is closed:** Should tapping **REC** automatically open OBS and start recording once ready, or require tapping **OPEN OBS** first? *(Default: auto-open & start recording)*
+4. **Antigravity Desktop Live Sync Boundary:** During Phase 0, we will test whether `agy acp --app-data-dir antigravity` refreshes an *already-open* Desktop chat tab immediately or only when reopening/switching threads. If Antigravity Desktop doesn't live-refresh an already-open tab from disk, do you also want a toggle/status card in Core for `agy remote-control` (official cloud mirror), or is fixing the shared-store ACP chat + auto-sync enough? *(Default: fix shared-store ACP + Phase 0 test first, report exact behavior)*

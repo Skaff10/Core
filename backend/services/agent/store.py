@@ -28,6 +28,11 @@ class AgentStore:
         conn.execute("PRAGMA synchronous = NORMAL;")
         return conn
 
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, col: str, col_def: str):
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if col not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+
     def _init_db(self):
         with self._lock:
             conn = self._get_connection()
@@ -42,6 +47,8 @@ class AgentStore:
                         model TEXT,
                         mode TEXT,
                         last_seq INTEGER DEFAULT 0,
+                        last_synced_sig TEXT DEFAULT '',
+                        config_options_json TEXT DEFAULT '[]',
                         created_at TEXT,
                         updated_at TEXT
                     );
@@ -55,6 +62,7 @@ class AgentStore:
                         stop_reason TEXT,
                         input_tokens INTEGER DEFAULT 0,
                         output_tokens INTEGER DEFAULT 0,
+                        seq_order INTEGER DEFAULT 0,
                         created_at TEXT
                     );
 
@@ -68,6 +76,7 @@ class AgentStore:
                         args_json TEXT,
                         raw_output TEXT,
                         status TEXT,
+                        seq_order INTEGER DEFAULT 0,
                         created_at TEXT
                     );
 
@@ -92,11 +101,31 @@ class AgentStore:
                     );
 
                     CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq);
-                    CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
-                    CREATE INDEX IF NOT EXISTS idx_tools_session ON tool_calls(session_id, created_at);
+                    CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq_order, created_at);
+                    CREATE INDEX IF NOT EXISTS idx_tools_session ON tool_calls(session_id, seq_order, created_at);
                     """
                 )
+                self._ensure_column(conn, "sessions", "last_synced_sig", "TEXT DEFAULT ''")
+                self._ensure_column(conn, "sessions", "config_options_json", "TEXT DEFAULT '[]'")
+                self._ensure_column(conn, "messages", "seq_order", "INTEGER DEFAULT 0")
+                self._ensure_column(conn, "tool_calls", "seq_order", "INTEGER DEFAULT 0")
                 conn.commit()
+            finally:
+                conn.close()
+
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                row = conn.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                try:
+                    d["config_options"] = json.loads(d.get("config_options_json") or "[]")
+                except Exception:
+                    d["config_options"] = []
+                return d
             finally:
                 conn.close()
 
@@ -117,12 +146,31 @@ class AgentStore:
                 row = cur.fetchone()
                 now = _iso_now()
                 if row:
-                    return dict(row)
+                    d = dict(row)
+                    # Backfill missing cwd/project/title if previously blank
+                    updates = []
+                    params = []
+                    if cwd and not d.get("cwd"):
+                        updates.append("cwd = ?")
+                        params.append(cwd)
+                    if project_id and not d.get("project_id"):
+                        updates.append("project_id = ?")
+                        params.append(project_id)
+                    if title and (not d.get("title") or d.get("title") in {"Untitled Session", "New Conversation"}):
+                        updates.append("title = ?")
+                        params.append(title)
+                    if updates:
+                        params.append(session_id)
+                        conn.execute(f"UPDATE sessions SET {', '.join(updates)} WHERE session_id = ?", tuple(params))
+                        conn.commit()
+                        row = conn.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+                        d = dict(row)
+                    return d
 
                 cur.execute(
                     """
-                    INSERT INTO sessions (session_id, project_id, cwd, title, model, mode, last_seq, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    INSERT INTO sessions (session_id, project_id, cwd, title, model, mode, last_seq, last_synced_sig, config_options_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 0, '', '[]', ?, ?)
                     """,
                     (session_id, project_id, cwd, title or "Untitled Session", model or "", mode or "default", now, now),
                 )
@@ -135,6 +183,8 @@ class AgentStore:
                     "model": model or "",
                     "mode": mode or "default",
                     "last_seq": 0,
+                    "last_synced_sig": "",
+                    "config_options_json": "[]",
                     "created_at": now,
                     "updated_at": now,
                 }
@@ -148,12 +198,14 @@ class AgentStore:
         model: Optional[str] = None,
         mode: Optional[str] = None,
         updated_at: Optional[str] = None,
+        last_synced_sig: Optional[str] = None,
+        config_options: Optional[List[Dict[str, Any]]] = None,
     ):
         with self._lock:
             conn = self._get_connection()
             try:
                 updates = []
-                params = []
+                params: List[Any] = []
                 if title is not None:
                     updates.append("title = ?")
                     params.append(title)
@@ -163,6 +215,12 @@ class AgentStore:
                 if mode is not None:
                     updates.append("mode = ?")
                     params.append(mode)
+                if last_synced_sig is not None:
+                    updates.append("last_synced_sig = ?")
+                    params.append(last_synced_sig)
+                if config_options is not None:
+                    updates.append("config_options_json = ?")
+                    params.append(json.dumps(config_options, ensure_ascii=False))
                 now = updated_at or _iso_now()
                 updates.append("updated_at = ?")
                 params.append(now)
@@ -172,6 +230,30 @@ class AgentStore:
                     query = f"UPDATE sessions SET {', '.join(updates)} WHERE session_id = ?"
                     conn.execute(query, tuple(params))
                     conn.commit()
+            finally:
+                conn.close()
+
+    def get_synced_signature(self, session_id: str) -> str:
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                row = conn.execute(
+                    "SELECT last_synced_sig FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                return (row["last_synced_sig"] or "") if row else ""
+            finally:
+                conn.close()
+
+    def get_message_count(self, session_id: str) -> int:
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM messages WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                return int(row["cnt"]) if row else 0
             finally:
                 conn.close()
 
@@ -238,17 +320,115 @@ class AgentStore:
         stop_reason: str = "",
         input_tokens: int = 0,
         output_tokens: int = 0,
+        seq_order: Optional[int] = None,
     ):
         with self._lock:
             conn = self._get_connection()
             try:
+                if seq_order is None:
+                    existing = conn.execute(
+                        "SELECT seq_order FROM messages WHERE id = ?",
+                        (message_id,),
+                    ).fetchone()
+                    if existing and existing["seq_order"]:
+                        resolved_order = int(existing["seq_order"])
+                    else:
+                        max_row = conn.execute(
+                            "SELECT COALESCE(MAX(seq_order), 0) AS m FROM messages WHERE session_id = ?",
+                            (session_id,),
+                        ).fetchone()
+                        resolved_order = int(max_row["m"] or 0) + 1
+                else:
+                    resolved_order = seq_order
+
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO messages
-                    (id, session_id, role, content, thoughts, stop_reason, input_tokens, output_tokens, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, session_id, role, content, thoughts, stop_reason, input_tokens, output_tokens, seq_order, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (message_id, session_id, role, content, thoughts, stop_reason, input_tokens, output_tokens, _iso_now()),
+                    (
+                        message_id,
+                        session_id,
+                        role,
+                        content,
+                        thoughts,
+                        stop_reason,
+                        input_tokens,
+                        output_tokens,
+                        resolved_order,
+                        _iso_now(),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def replace_session_history(
+        self,
+        session_id: str,
+        messages_list: List[Dict[str, Any]],
+        tool_calls_list: List[Dict[str, Any]],
+        synced_sig: str = "",
+    ):
+        """
+        Atomically replaces consolidated messages and tool_calls for `session_id`
+        from an authoritative ACP `session/load` replay while preserving exact order.
+        """
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                now = _iso_now()
+                conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+
+                for idx, m in enumerate(messages_list, start=1):
+                    conn.execute(
+                        """
+                        INSERT INTO messages
+                        (id, session_id, role, content, thoughts, stop_reason, input_tokens, output_tokens, seq_order, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            m["id"],
+                            session_id,
+                            m["role"],
+                            m.get("content", ""),
+                            m.get("thoughts", ""),
+                            m.get("stop_reason", ""),
+                            int(m.get("input_tokens", 0) or 0),
+                            int(m.get("output_tokens", 0) or 0),
+                            idx,
+                            m.get("created_at") or now,
+                        ),
+                    )
+
+                for t_idx, tc in enumerate(tool_calls_list, start=1):
+                    args_json = json.dumps(tc.get("args"), ensure_ascii=False) if tc.get("args") is not None else "{}"
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO tool_calls
+                        (tool_call_id, session_id, message_id, name, title, kind, args_json, raw_output, status, seq_order, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            tc["tool_call_id"],
+                            session_id,
+                            tc.get("message_id", ""),
+                            tc.get("name", ""),
+                            tc.get("title", ""),
+                            tc.get("kind", ""),
+                            args_json,
+                            tc.get("raw_output", ""),
+                            tc.get("status", "completed"),
+                            t_idx,
+                            now,
+                        ),
+                    )
+
+                conn.execute(
+                    "UPDATE sessions SET last_synced_sig = ?, updated_at = ? WHERE session_id = ?",
+                    (synced_sig, now, session_id),
                 )
                 conn.commit()
             finally:
@@ -264,18 +444,24 @@ class AgentStore:
         kind: str,
         args: Any,
         status: str = "in_progress",
+        raw_output: str = "",
     ):
         with self._lock:
             conn = self._get_connection()
             try:
-                args_json = json.dumps(args, ensure_ascii=False) if args else "{}"
+                args_json = json.dumps(args, ensure_ascii=False) if args is not None else "{}"
+                max_row = conn.execute(
+                    "SELECT COALESCE(MAX(seq_order), 0) AS m FROM tool_calls WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                next_order = int(max_row["m"] or 0) + 1
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO tool_calls
-                    (tool_call_id, session_id, message_id, name, title, kind, args_json, raw_output, status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (tool_call_id, session_id, message_id, name, title, kind, args_json, raw_output, status, seq_order, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (tool_call_id, session_id, message_id, name, title, kind, args_json, "", status, _iso_now()),
+                    (tool_call_id, session_id, message_id, name, title, kind, args_json, raw_output, status, next_order, _iso_now()),
                 )
                 conn.commit()
             finally:
@@ -373,7 +559,7 @@ class AgentStore:
                         """
                         SELECT * FROM messages
                         WHERE session_id = ? AND created_at < ?
-                        ORDER BY created_at DESC
+                        ORDER BY seq_order DESC, created_at DESC, rowid DESC
                         LIMIT ?
                         """,
                         (session_id, before, limit),
@@ -383,26 +569,26 @@ class AgentStore:
                         """
                         SELECT * FROM messages
                         WHERE session_id = ?
-                        ORDER BY created_at DESC
+                        ORDER BY seq_order DESC, created_at DESC, rowid DESC
                         LIMIT ?
                         """,
                         (session_id, limit),
                     )
                 rows = cur.fetchall()
 
-                # Get tools linked to this session
                 cur.execute(
-                    "SELECT * FROM tool_calls WHERE session_id = ? ORDER BY created_at ASC",
+                    "SELECT * FROM tool_calls WHERE session_id = ? ORDER BY seq_order ASC, created_at ASC, rowid ASC",
                     (session_id,),
                 )
                 tool_rows = cur.fetchall()
-                tools_by_msg = {}
+                tools_by_msg: Dict[str, List[Dict[str, Any]]] = {}
                 for tr in tool_rows:
                     mid = tr["message_id"] or ""
                     if mid not in tools_by_msg:
                         tools_by_msg[mid] = []
                     t_dict = dict(tr)
                     t_dict["args"] = json.loads(t_dict.get("args_json") or "{}")
+                    t_dict["preview"] = t_dict.get("raw_output", "")
                     tools_by_msg[mid].append(t_dict)
 
                 result = []
@@ -416,4 +602,3 @@ class AgentStore:
 
 
 agent_store = AgentStore()
-

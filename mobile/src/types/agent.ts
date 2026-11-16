@@ -18,6 +18,22 @@ export interface AgentSession {
   updatedAt: string;
   isRunning: boolean;
   isAwaitingPermission: boolean;
+  activeOnPc?: boolean;
+}
+
+export interface AgentConfigOptionItem {
+  value: string;
+  name: string;
+  description?: string;
+}
+
+export interface AgentConfigOption {
+  id: string;
+  name: string;
+  category?: string;
+  type?: string;
+  currentValue: string;
+  options: AgentConfigOptionItem[];
 }
 
 export interface ToolCallItem {
@@ -60,4 +76,3 @@ export interface SessionTurnState {
   pendingPermission: PermissionRequestPayload | null;
   queueDepth: number;
 }
-

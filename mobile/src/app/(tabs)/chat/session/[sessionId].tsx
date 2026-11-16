@@ -10,6 +10,8 @@ import {
   Platform,
   ActivityIndicator,
   ScrollView,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -17,12 +19,10 @@ import {
   ArrowLeft,
   Send,
   Square,
-  Sparkles,
-  Shield,
   Layers,
-  Terminal,
   ChevronDown,
   RotateCcw,
+  MessageSquare,
 } from "lucide-react-native";
 import { HeaderStatus } from "../../../../components/HeaderStatus";
 import { AgentBubble } from "../../../../components/agent/AgentBubble";
@@ -31,23 +31,34 @@ import { useConnectionStore } from "../../../../store/useConnectionStore";
 import { useAgentStore } from "../../../../store/agentStore";
 import {
   fetchSessionHistory,
+  syncSessionFromPc,
   cancelTurn,
-  respondPermission,
-  setSessionOption,
 } from "../../../../services/agentApi";
 import { agentSocket } from "../../../../services/agentSocket";
-import { AgentMessage } from "../../../../types/agent";
+import { AgentMessage, AgentConfigOption } from "../../../../types/agent";
 
-const MODEL_OPTIONS = [
-  { id: "claude-sonnet-5-5", label: "Sonnet 5.5" },
-  { id: "claude-opus-5-5", label: "Opus 5.5" },
-  { id: "gemini-3.8-flash", label: "Gemini Flash" },
-];
-
-const MODE_OPTIONS = [
-  { id: "default", label: "Default" },
-  { id: "accept-edits", label: "Accept Edits" },
-  { id: "plan", label: "Plan" },
+const FALLBACK_CONFIG_OPTIONS: AgentConfigOption[] = [
+  {
+    id: "model",
+    name: "Model",
+    currentValue: "claude-sonnet-5-5",
+    options: [
+      { value: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+      { value: "gemini-4-hydrogen", name: "Gemini 4 Hydrogen" },
+      { value: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
+      { value: "claude-opus-5-5", name: "Claude Opus 5.5" },
+    ],
+  },
+  {
+    id: "mode",
+    name: "Mode",
+    currentValue: "default",
+    options: [
+      { value: "default", name: "Default" },
+      { value: "accept-edits", name: "Accept Edits" },
+      { value: "plan", name: "Plan" },
+    ],
+  },
 ];
 
 export default function SessionChatScreen() {
@@ -59,95 +70,158 @@ export default function SessionChatScreen() {
     activeSessionTitle,
     messagesBySession,
     sessionStates,
+    configOptionsBySession,
     selectedModel,
-    selectedMode,
     setSelectedModel,
     setSelectedMode,
     setHistory,
+    setSessionConfigOptions,
+    setSessionCommands,
     socketConnected,
   } = useAgentStore();
 
   const [promptText, setPromptText] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [optionsMenuOpen, setOptionsMenuOpen] = useState(false);
 
   const flatListRef = useRef<FlatList<AgentMessage> | null>(null);
+  const nearBottomRef = useRef(true);
 
-  const messages = messagesBySession[sessionId || ""] || [];
-  const turnState = sessionStates[sessionId || ""] || {
+  const sid = sessionId || "";
+  const messages = messagesBySession[sid] || [];
+  const turnState = sessionStates[sid] || {
     state: "idle",
     pendingPermission: null,
     queueDepth: 0,
   };
+  const configOptions =
+    configOptionsBySession[sid] && configOptionsBySession[sid].length > 0
+      ? configOptionsBySession[sid]
+      : FALLBACK_CONFIG_OPTIONS;
+
+  const currentModelOpt = configOptions.find((o) => o.id === "model");
+  const currentModelValue = currentModelOpt?.currentValue || selectedModel;
+  const currentModelShort =
+    currentModelOpt?.options.find((x) => x.value === currentModelValue)?.name ||
+    currentModelValue;
 
   const isRunning = turnState.state === "running";
   const pendingPerm = turnState.pendingPermission;
 
-  // Load history & subscribe to live socket stream
-  useEffect(() => {
-    let mounted = true;
-    if (!sessionId || !pcIp || !authToken) return;
-
-    async function initSession() {
-      try {
-        setLoadingHistory(true);
-        const hist = await fetchSessionHistory(pcIp, pcPort, authToken, sessionId);
-        if (mounted) {
-          setHistory(sessionId, hist);
-        }
-      } catch {
-        // Fallback to live stream
-      } finally {
-        if (mounted) setLoadingHistory(false);
+  const loadSession = useCallback(async () => {
+    if (!sid || !pcIp || !authToken) return;
+    try {
+      setLoadingHistory(true);
+      setSyncWarning(null);
+      const res = await fetchSessionHistory(
+        pcIp,
+        pcPort,
+        authToken,
+        sid,
+        activeSessionCwd
+      );
+      setHistory(sid, res.messages);
+      if (res.configOptions.length > 0) {
+        setSessionConfigOptions(sid, res.configOptions);
       }
-
-      // Subscribe to real-time events for this session
-      agentSocket.subscribeSession(sessionId, 0);
+      if (res.commands.length > 0) {
+        setSessionCommands(sid, res.commands);
+      }
+      if (res.syncError) {
+        setSyncWarning(res.syncError);
+      }
+    } catch (err: any) {
+      setSyncWarning(err?.message || "Failed syncing history");
+    } finally {
+      setLoadingHistory(false);
     }
+  }, [
+    sid,
+    pcIp,
+    pcPort,
+    authToken,
+    activeSessionCwd,
+    setHistory,
+    setSessionConfigOptions,
+    setSessionCommands,
+  ]);
 
-    initSession();
+  useEffect(() => {
+    if (!sid || !pcIp || !authToken) return;
+    agentSocket.init(pcIp, pcPort, authToken);
+    loadSession().finally(() => {
+      agentSocket.subscribeSession(sid);
+    });
 
     return () => {
-      mounted = false;
-      agentSocket.unsubscribeSession(sessionId);
+      agentSocket.unsubscribeSession(sid);
     };
-  }, [sessionId, pcIp, pcPort, authToken, setHistory]);
+  }, [sid, pcIp, pcPort, authToken, loadSession]);
+
+  const handleManualSync = async () => {
+    if (!sid || !pcIp || !authToken || syncing) return;
+    try {
+      setSyncing(true);
+      setSyncWarning(null);
+      const res = await syncSessionFromPc(
+        pcIp,
+        pcPort,
+        authToken,
+        sid,
+        activeSessionCwd,
+        true
+      );
+      setHistory(sid, res.messages);
+      if (res.configOptions.length > 0) {
+        setSessionConfigOptions(sid, res.configOptions);
+      }
+    } catch (err: any) {
+      setSyncWarning(err?.message || "Manual sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const handleSend = () => {
     const clean = promptText.trim();
-    if (!clean || !sessionId) return;
+    if (!clean || !sid) return;
 
-    const cwd = activeSessionCwd || "";
-    agentSocket.sendPrompt(sessionId, clean, cwd);
-    setPromptText("");
+    nearBottomRef.current = true;
+    const sent = agentSocket.sendPrompt(sid, clean, activeSessionCwd || "");
+    if (sent) {
+      setPromptText("");
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 80);
+    }
   };
 
   const handleStop = async () => {
-    if (!sessionId || !pcIp || !authToken) return;
+    if (!sid || !pcIp || !authToken) return;
     try {
-      await cancelTurn(pcIp, pcPort, authToken, sessionId);
+      await cancelTurn(pcIp, pcPort, authToken, sid);
     } catch {}
   };
 
-  const handleRespondPermission = async (optionId?: string) => {
-    if (!sessionId || !pendingPerm) return;
-    agentSocket.respondPermission(sessionId, pendingPerm.request_id, optionId);
+  const handleRespondPermission = (optionId?: string) => {
+    if (!sid || !pendingPerm) return;
+    agentSocket.respondPermission(sid, pendingPerm.request_id, optionId);
   };
 
-  const handleChangeModel = (modelId: string) => {
-    setSelectedModel(modelId);
-    if (sessionId) {
-      agentSocket.setOption(sessionId, "model", modelId);
+  const handleSetConfigOption = (configId: string, value: string) => {
+    if (configId === "model") setSelectedModel(value);
+    if (configId === "mode") setSelectedMode(value);
+    if (sid) {
+      agentSocket.setOption(sid, configId, value);
     }
     setOptionsMenuOpen(false);
   };
 
-  const handleChangeMode = (modeId: string) => {
-    setSelectedMode(modeId);
-    if (sessionId) {
-      agentSocket.setOption(sessionId, "mode", modeId);
-    }
-    setOptionsMenuOpen(false);
+  const handleScroll = (ev: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { layoutMeasurement, contentOffset, contentSize } = ev.nativeEvent;
+    const distanceFromBottom =
+      contentSize.height - (layoutMeasurement.height + contentOffset.y);
+    nearBottomRef.current = distanceFromBottom < 80;
   };
 
   return (
@@ -173,6 +247,19 @@ export default function SessionChatScreen() {
           </Text>
         </View>
 
+        <TouchableOpacity
+          style={styles.syncIconBtn}
+          onPress={handleManualSync}
+          disabled={syncing}
+          activeOpacity={0.75}
+        >
+          {syncing ? (
+            <ActivityIndicator size="small" color="#06B6D4" />
+          ) : (
+            <RotateCcw size={14} color="#94A3B8" />
+          )}
+        </TouchableOpacity>
+
         {isRunning ? (
           <TouchableOpacity
             style={styles.stopBtn}
@@ -189,65 +276,46 @@ export default function SessionChatScreen() {
             onPress={() => setOptionsMenuOpen(!optionsMenuOpen)}
           >
             <Layers size={14} color="#06B6D4" />
-            <Text style={styles.optionsText}>{selectedModel.split("-")[1] || "Sonnet"}</Text>
+            <Text style={styles.optionsText} numberOfLines={1}>
+              {currentModelShort.split(" ").slice(0, 2).join(" ")}
+            </Text>
             <ChevronDown size={12} color="#64748B" />
           </TouchableOpacity>
         )}
       </View>
 
-      {/* Model & Mode Options Drawer */}
+      {/* Dynamic Model / Thinking / Mode Options Drawer */}
       {optionsMenuOpen && (
-        <View style={styles.optionsDrawer}>
-          <View style={styles.drawerSection}>
-            <Text style={styles.drawerLabel}>ACTIVE AI MODEL</Text>
-            <View style={styles.chipsRow}>
-              {MODEL_OPTIONS.map((m) => (
-                <TouchableOpacity
-                  key={m.id}
-                  style={[
-                    styles.chip,
-                    selectedModel === m.id && styles.chipActive,
-                  ]}
-                  onPress={() => handleChangeModel(m.id)}
-                >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      selectedModel === m.id && styles.chipTextActive,
-                    ]}
-                  >
-                    {m.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+        <ScrollView style={styles.optionsDrawer} contentContainerStyle={styles.drawerInner}>
+          {configOptions.map((cfgGroup) => (
+            <View key={cfgGroup.id} style={styles.drawerSection}>
+              <Text style={styles.drawerLabel}>
+                {cfgGroup.name.toUpperCase()}
+              </Text>
+              <View style={styles.chipsRow}>
+                {cfgGroup.options.map((opt) => {
+                  const active = cfgGroup.currentValue === opt.value;
+                  return (
+                    <TouchableOpacity
+                      key={opt.value}
+                      style={[styles.chip, active && styles.chipActive]}
+                      onPress={() => handleSetConfigOption(cfgGroup.id, opt.value)}
+                    >
+                      <Text
+                        style={[
+                          styles.chipText,
+                          active && styles.chipTextActive,
+                        ]}
+                      >
+                        {opt.name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             </View>
-          </View>
-
-          <View style={styles.drawerSection}>
-            <Text style={styles.drawerLabel}>PERMISSION MODE</Text>
-            <View style={styles.chipsRow}>
-              {MODE_OPTIONS.map((m) => (
-                <TouchableOpacity
-                  key={m.id}
-                  style={[
-                    styles.chip,
-                    selectedMode === m.id && styles.chipActive,
-                  ]}
-                  onPress={() => handleChangeMode(m.id)}
-                >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      selectedMode === m.id && styles.chipTextActive,
-                    ]}
-                  >
-                    {m.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-        </View>
+          ))}
+        </ScrollView>
       )}
 
       {/* Turn status bar */}
@@ -272,7 +340,9 @@ export default function SessionChatScreen() {
               ? "AGENT RUNNING TURN ON PC..."
               : pendingPerm
               ? "WAITING ON APPROVAL"
-              : "AGENT READY"}
+              : socketConnected
+              ? "SHARED PC STORE LINKED"
+              : "RECONNECTING SOCKET..."}
           </Text>
         </View>
 
@@ -283,6 +353,14 @@ export default function SessionChatScreen() {
         )}
       </View>
 
+      {syncWarning ? (
+        <View style={styles.warnBanner}>
+          <Text style={styles.warnBannerText} numberOfLines={2}>
+            SYNC NOTICE: {syncWarning}
+          </Text>
+        </View>
+      ) : null}
+
       {/* Main Messages Stream */}
       <KeyboardAvoidingView
         style={styles.flexOne}
@@ -292,7 +370,9 @@ export default function SessionChatScreen() {
         {loadingHistory ? (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="small" color="#06B6D4" />
-            <Text style={styles.loadingHistoryText}>Loading conversation history...</Text>
+            <Text style={styles.loadingHistoryText}>
+              Syncing conversation from Antigravity...
+            </Text>
           </View>
         ) : (
           <FlatList
@@ -301,8 +381,21 @@ export default function SessionChatScreen() {
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => <AgentBubble message={item} />}
             contentContainerStyle={styles.messagesList}
-            onContentSizeChange={() =>
-              flatListRef.current?.scrollToEnd({ animated: true })
+            onScroll={handleScroll}
+            scrollEventThrottle={100}
+            onContentSizeChange={() => {
+              if (nearBottomRef.current) {
+                flatListRef.current?.scrollToEnd({ animated: true });
+              }
+            }}
+            ListEmptyComponent={
+              <View style={styles.emptyBox}>
+                <MessageSquare size={32} color="#334155" />
+                <Text style={styles.emptyTitle}>Conversation Ready</Text>
+                <Text style={styles.emptyDesc}>
+                  Messages here share Antigravity&apos;s PC store and appear in your workspace history.
+                </Text>
+              </View>
             }
           />
         )}
@@ -323,7 +416,9 @@ export default function SessionChatScreen() {
             style={styles.textInput}
             value={promptText}
             onChangeText={setPromptText}
-            placeholder={`Instruct Antigravity in ${activeSessionTitle ? activeSessionTitle.slice(0, 20) : "project"}...`}
+            placeholder={`Instruct Antigravity in ${
+              activeSessionTitle ? activeSessionTitle.slice(0, 20) : "project"
+            }...`}
             placeholderTextColor="#64748B"
             multiline
           />
@@ -360,7 +455,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#181818",
     borderBottomWidth: 1,
     borderBottomColor: "#2A2A2A",
-    gap: 10,
+    gap: 8,
   },
   backBtn: {
     backgroundColor: "#121212",
@@ -382,6 +477,13 @@ const styles = StyleSheet.create({
     color: "#64748B",
     fontSize: 9.5,
     fontFamily: "monospace",
+  },
+  syncIconBtn: {
+    backgroundColor: "#121212",
+    borderWidth: 1,
+    borderColor: "#2A2A2A",
+    padding: 7,
+    borderRadius: 3,
   },
   stopBtn: {
     flexDirection: "row",
@@ -410,6 +512,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 5,
     borderRadius: 3,
+    maxWidth: 120,
   },
   optionsText: {
     color: "#06B6D4",
@@ -418,9 +521,12 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   optionsDrawer: {
+    maxHeight: 240,
     backgroundColor: "#1A1D24",
     borderBottomWidth: 1,
     borderBottomColor: "#06B6D4",
+  },
+  drawerInner: {
     padding: 12,
     gap: 10,
   },
@@ -492,6 +598,18 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     fontWeight: "800",
   },
+  warnBanner: {
+    backgroundColor: "#2B1E08",
+    borderBottomWidth: 1,
+    borderBottomColor: "#F59E0B",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  warnBannerText: {
+    color: "#FDE68A",
+    fontSize: 10,
+    fontFamily: "monospace",
+  },
   loadingBox: {
     flex: 1,
     alignItems: "center",
@@ -506,6 +624,26 @@ const styles = StyleSheet.create({
   messagesList: {
     padding: 12,
     paddingBottom: 16,
+    flexGrow: 1,
+  },
+  emptyBox: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 60,
+    gap: 8,
+  },
+  emptyTitle: {
+    color: "#E2E8F0",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  emptyDesc: {
+    color: "#64748B",
+    fontSize: 11.5,
+    textAlign: "center",
+    maxWidth: 260,
+    lineHeight: 17,
   },
   stickyPermWrap: {
     paddingHorizontal: 12,
@@ -546,4 +684,3 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
 });
-

@@ -2,8 +2,11 @@ import hashlib
 import os
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Iterable
 from urllib.parse import unquote
+import time
+
+from services.agent.agy_locator import get_antigravity_data_dir
 
 try:
     import pygetwindow as gw
@@ -61,11 +64,79 @@ def is_scratch_or_internal(normalized_path: str) -> bool:
     lower = normalized_path.lower()
     if "\\.gemini\\antigravity\\brain\\" in lower:
         return True
+    if "\\.gemini\\antigravity\\scratch" in lower:
+        return True
     if "\\.gemini\\tmp" in lower:
         return True
     if "\\appdata\\local\\temp" in lower:
         return True
     return False
+
+
+def is_session_active_on_pc(session_id: str, window_seconds: float = 90.0) -> bool:
+    """
+    Best-effort detection of whether a conversation is currently open/active on PC
+    by checking if its SQLite WAL file is non-empty and recently modified.
+    """
+    if not session_id:
+        return False
+    wal_path = get_antigravity_data_dir() / "conversations" / f"{session_id}.db-wal"
+    try:
+        if wal_path.is_file():
+            st = wal_path.stat()
+            if st.st_size > 0 and (time.time() - st.st_mtime) < window_seconds:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def is_allowed_project_cwd(
+    normalized_path: str,
+    known_project_paths: Iterable[str] = (),
+    configured_roots: Iterable[str] = (),
+) -> bool:
+    """
+    Validates that a target workspace directory is safe for creating a new session:
+    - Must be an existing directory
+    - Never a filesystem root or Windows OS directory
+    - Allowed if in configured_roots OR matches an already-known Antigravity workspace
+    """
+    if not normalized_path:
+        return False
+    p = Path(normalized_path)
+    if not p.is_dir():
+        return False
+
+    # Reject drive roots (e.g. C:\) and system folders
+    if p.parent == p:
+        return False
+    lower = str(p).lower()
+    blocked_prefixes = (
+        "c:\\windows",
+        "c:\\program files",
+        "c:\\program files (x86)",
+        "c:\\programdata",
+    )
+    if any(lower == bp or lower.startswith(bp + "\\") for bp in blocked_prefixes):
+        return False
+    if is_scratch_or_internal(lower):
+        return False
+
+    known_set = {normalize_cwd(k).lower() for k in known_project_paths if k}
+    if lower in known_set:
+        return True
+
+    for root in configured_roots:
+        norm_root = normalize_cwd(root).lower()
+        if not norm_root:
+            continue
+        sep = norm_root if norm_root.endswith("\\") else norm_root + "\\"
+        if lower == norm_root or lower.startswith(sep):
+            return True
+
+    # If no configured_roots are set, still allow valid non-system existing dirs
+    return not list(configured_roots)
 
 
 def get_open_window_titles() -> List[str]:
@@ -114,6 +185,7 @@ def group_sessions_by_project(
 
         is_running = sid in running_set
         is_awaiting_perm = sid in perm_set
+        active_on_pc = is_session_active_on_pc(sid)
 
         session_entry = {
             "sessionId": sid,
@@ -122,6 +194,7 @@ def group_sessions_by_project(
             "updatedAt": updated_at,
             "isRunning": is_running,
             "isAwaitingPermission": is_awaiting_perm,
+            "activeOnPc": active_on_pc,
         }
 
         if pid not in projects_map:

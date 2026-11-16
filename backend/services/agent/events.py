@@ -17,7 +17,17 @@ def detect_quota_exhaustion(text: Optional[str]) -> bool:
 def truncate_tool_output(raw_output: Any, max_chars: int = 4096) -> Tuple[str, bool]:
     if raw_output is None:
         return "", False
-    if not isinstance(raw_output, str):
+    if isinstance(raw_output, dict):
+        if set(raw_output.keys()) == {"output"} and isinstance(raw_output.get("output"), str):
+            text = raw_output["output"]
+        elif isinstance(raw_output.get("output"), str) and len(raw_output) <= 2:
+            text = raw_output["output"]
+        else:
+            try:
+                text = json.dumps(raw_output, indent=2, ensure_ascii=False)
+            except Exception:
+                text = str(raw_output)
+    elif not isinstance(raw_output, str):
         try:
             text = json.dumps(raw_output, indent=2, ensure_ascii=False)
         except Exception:

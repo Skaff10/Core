@@ -20,6 +20,24 @@ export interface QuickAction {
   command: string;
 }
 
+export interface ObsStatus {
+  installed: boolean;
+  obs_path: string | null;
+  running: boolean;
+  pid: number | null;
+  ws_configured_enabled: boolean;
+  ws_port: number;
+  ws_connected: boolean;
+  state: "offline" | "ws_disabled" | "auth_failed" | "connecting" | "standby" | "recording" | "paused";
+  recording: boolean;
+  paused: boolean;
+  duration_ms: number;
+  duration_text: string;
+  bytes: number;
+  last_output_path: string | null;
+  error: string | null;
+}
+
 interface ConnectionContextValue {
   pcIp: string;
   pcPort: string;
@@ -28,10 +46,12 @@ interface ConnectionContextValue {
   lastError: string | null;
   telemetry: ForegroundTelemetry | null;
   quickActions: QuickAction[];
+  obsStatus: ObsStatus | null;
   saveCredentials: (ip: string, port: string, token: string) => Promise<void>;
   setConnectedState: (connected: boolean, err?: string | null) => void;
   setTelemetry: (data: ForegroundTelemetry) => void;
   setQuickActions: (actions: QuickAction[]) => void;
+  setObsStatus: (status: ObsStatus) => void;
 }
 
 const STORAGE_KEYS = {
@@ -78,6 +98,7 @@ export const ConnectionProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [lastError, setLastError] = useState<string | null>(null);
   const [telemetry, setTelemetryState] = useState<ForegroundTelemetry | null>(null);
   const [quickActions, setQuickActionsState] = useState<QuickAction[]>([]);
+  const [obsStatus, setObsStatusState] = useState<ObsStatus | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -131,6 +152,10 @@ export const ConnectionProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setQuickActionsState(actions);
   }, []);
 
+  const setObsStatus = useCallback((status: ObsStatus) => {
+    setObsStatusState(status);
+  }, []);
+
   return (
     <ConnectionContext.Provider
       value={{
@@ -141,10 +166,12 @@ export const ConnectionProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         lastError,
         telemetry,
         quickActions,
+        obsStatus,
         saveCredentials,
         setConnectedState,
         setTelemetry,
         setQuickActions,
+        setObsStatus,
       }}
     >
       {children}

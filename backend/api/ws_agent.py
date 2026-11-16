@@ -81,13 +81,16 @@ async def websocket_agent_multiplex(websocket: WebSocket):
                 cwd = msg.get("cwd", "")
                 images = msg.get("images")
                 if session_id and text:
-                    await agent_hub.submit_prompt(
-                        session_id=session_id,
-                        client_msg_id=client_msg_id,
-                        text=text,
-                        cwd=cwd,
-                        images=images,
-                    )
+                    try:
+                        await agent_hub.submit_prompt(
+                            session_id=session_id,
+                            client_msg_id=client_msg_id,
+                            text=text,
+                            cwd=cwd,
+                            images=images,
+                        )
+                    except Exception as exc:
+                        await websocket.send_json({"type": "error", "message": str(exc)})
 
             elif m_type == "cancel":
                 session_id = msg.get("session_id", "")

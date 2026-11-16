@@ -1,10 +1,10 @@
-from typing import Optional, List, Dict, Any
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from core.auth import require_mobile_auth
 from core.config_manager import config_manager
-from services.agent.agy_locator import locate_agy_binary
+from services.agent.agy_locator import locate_agy_binary, get_antigravity_data_dir
 from services.agent.hub import agent_hub
 from services.agent.store import agent_store
 
@@ -27,13 +27,21 @@ class SetOptionRequest(BaseModel):
     value: str
 
 
+class SyncSessionRequest(BaseModel):
+    cwd: Optional[str] = None
+    force: bool = True
+
+
 @router.get("/status", dependencies=[Depends(require_mobile_auth)])
 async def get_agent_status():
     locator = locate_agy_binary()
     is_alive = agent_hub.is_healthy()
+    cfg = config_manager.load()
     return {
         "status": "online" if is_alive else "offline",
         "binary": locator,
+        "appDataDir": cfg.agy_app_data_dir,
+        "resolvedDataPath": str(get_antigravity_data_dir()),
         "agentInfo": agent_hub.acp.agent_info if is_alive else None,
         "agentCapabilities": agent_hub.acp.agent_capabilities if is_alive else None,
     }
@@ -66,6 +74,8 @@ async def create_new_session(payload: CreateSessionRequest):
             mode=payload.mode,
         )
         return {"status": "created", "session": session_info}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed creating session: {exc}")
 
@@ -73,11 +83,46 @@ async def create_new_session(payload: CreateSessionRequest):
 @router.get("/sessions/{session_id}/history", dependencies=[Depends(require_mobile_auth)])
 async def get_session_history(
     session_id: str,
+    cwd: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     before: Optional[str] = Query(default=None),
 ):
+    sync_error: Optional[str] = None
+    try:
+        await agent_hub.sync_session_if_stale(session_id, cwd=cwd or "", broadcast=False)
+    except Exception as exc:
+        sync_error = str(exc)
+
     history = agent_store.get_session_history(session_id=session_id, limit=limit, before=before)
-    return {"session_id": session_id, "messages": history}
+    sess = agent_store.get_session(session_id)
+    return {
+        "session_id": session_id,
+        "messages": history,
+        "session": sess,
+        "config_options": agent_hub.get_session_config_options(session_id),
+        "commands": agent_hub._session_commands.get(session_id, []),
+        "sync_error": sync_error,
+    }
+
+
+@router.post("/sessions/{session_id}/sync", dependencies=[Depends(require_mobile_auth)])
+async def sync_session_from_pc(session_id: str, payload: SyncSessionRequest = SyncSessionRequest()):
+    try:
+        updated = await agent_hub.sync_session_if_stale(
+            session_id,
+            cwd=payload.cwd or "",
+            force=payload.force,
+            broadcast=True,
+        )
+        history = agent_store.get_session_history(session_id=session_id, limit=50)
+        return {
+            "status": "synced" if updated else "up_to_date",
+            "session_id": session_id,
+            "messages": history,
+            "config_options": agent_hub.get_session_config_options(session_id),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed syncing session: {exc}")
 
 
 @router.get("/sessions/{session_id}/tool/{tool_call_id}", dependencies=[Depends(require_mobile_auth)])
@@ -115,4 +160,3 @@ async def set_session_config_option(session_id: str, payload: SetOptionRequest):
         return {"status": "updated", "result": res}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-

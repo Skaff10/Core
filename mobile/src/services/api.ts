@@ -1,6 +1,6 @@
 import { Platform } from "react-native";
 import { File, UploadType } from "expo-file-system";
-import { QuickAction, ForegroundTelemetry } from "../store/useConnectionStore";
+import { QuickAction, ForegroundTelemetry, ObsStatus } from "../store/useConnectionStore";
 
 export interface WhitelistedRoot {
   name: string;
@@ -364,5 +364,67 @@ export class CoreApiClient {
       method: "POST",
       headers: this.headers(token),
     });
+  }
+
+  private static async parseObsResponse(res: Response): Promise<ObsStatus> {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.detail || `HTTP ${res.status}: OBS command failed`);
+    }
+    return (data?.obs || data) as ObsStatus;
+  }
+
+  static async fetchObsStatus(ip: string, port: string, token: string): Promise<ObsStatus> {
+    const res = await fetch(`${this.buildBaseUrl(ip, port)}/api/obs/status`, {
+      method: "GET",
+      headers: this.headers(token),
+    });
+    return this.parseObsResponse(res);
+  }
+
+  static async openObs(
+    ip: string,
+    port: string,
+    token: string,
+    startRecording = false
+  ): Promise<ObsStatus> {
+    const res = await fetch(`${this.buildBaseUrl(ip, port)}/api/obs/open`, {
+      method: "POST",
+      headers: this.headers(token),
+      body: JSON.stringify({ start_recording: startRecording }),
+    });
+    return this.parseObsResponse(res);
+  }
+
+  static async startObsRecording(ip: string, port: string, token: string): Promise<ObsStatus> {
+    const res = await fetch(`${this.buildBaseUrl(ip, port)}/api/obs/record/start`, {
+      method: "POST",
+      headers: this.headers(token),
+    });
+    return this.parseObsResponse(res);
+  }
+
+  static async pauseObsRecording(ip: string, port: string, token: string): Promise<ObsStatus> {
+    const res = await fetch(`${this.buildBaseUrl(ip, port)}/api/obs/record/pause`, {
+      method: "POST",
+      headers: this.headers(token),
+    });
+    return this.parseObsResponse(res);
+  }
+
+  static async resumeObsRecording(ip: string, port: string, token: string): Promise<ObsStatus> {
+    const res = await fetch(`${this.buildBaseUrl(ip, port)}/api/obs/record/resume`, {
+      method: "POST",
+      headers: this.headers(token),
+    });
+    return this.parseObsResponse(res);
+  }
+
+  static async stopObsRecording(ip: string, port: string, token: string): Promise<ObsStatus> {
+    const res = await fetch(`${this.buildBaseUrl(ip, port)}/api/obs/record/stop`, {
+      method: "POST",
+      headers: this.headers(token),
+    });
+    return this.parseObsResponse(res);
   }
 }

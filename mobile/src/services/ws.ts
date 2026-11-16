@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useConnectionStore, ForegroundTelemetry, sanitizeHostAndPort } from "../store/useConnectionStore";
+import { useConnectionStore, ForegroundTelemetry, ObsStatus, sanitizeHostAndPort } from "../store/useConnectionStore";
 import { checkAndFetchPendingTransfers, processIncomingTransfer } from "./fileReceiver";
 
 export interface LaunchNotificationEvent {
@@ -11,7 +11,7 @@ export interface LaunchNotificationEvent {
 export function useForegroundWebSocket(
   onNotificationEvent?: (event: LaunchNotificationEvent) => void
 ) {
-  const { pcIp, pcPort, authToken, setConnectedState, setTelemetry } = useConnectionStore();
+  const { pcIp, pcPort, authToken, setConnectedState, setTelemetry, setObsStatus } = useConnectionStore();
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -58,6 +58,8 @@ export function useForegroundWebSocket(
             const payload = JSON.parse(event.data);
             if (payload.type === "foreground" && payload.data) {
               setTelemetry(payload.data as ForegroundTelemetry);
+            } else if (payload.type === "obs_status" && payload.data) {
+              setObsStatus(payload.data as ObsStatus);
             } else if (payload.type === "notification" && payload.data && onNotificationEvent) {
               onNotificationEvent(payload.data as LaunchNotificationEvent);
             } else if (payload.type === "incoming_file" && payload.data) {
@@ -97,6 +99,6 @@ export function useForegroundWebSocket(
       }
       cleanupSocket();
     };
-  }, [pcIp, pcPort, authToken, setConnectedState, setTelemetry]);
+  }, [pcIp, pcPort, authToken, setConnectedState, setTelemetry, setObsStatus]);
 }
 

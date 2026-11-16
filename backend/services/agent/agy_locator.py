@@ -3,9 +3,41 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from core.config_manager import config_manager
+
+
+def get_antigravity_data_dir() -> Path:
+    cfg = config_manager.load()
+    sub = (cfg.agy_app_data_dir or "antigravity").strip()
+    p = Path(sub)
+    if p.is_absolute():
+        return p
+    return Path.home() / ".gemini" / sub
+
+
+def get_conversation_db_signature(session_id: str) -> Optional[str]:
+    """
+    Returns a compact string signature (mtime_ns + size) for the Antigravity
+    conversation .db and .db-wal files on disk so we detect PC-side edits.
+    """
+    if not session_id:
+        return None
+    conv_dir = get_antigravity_data_dir() / "conversations"
+    db_file = conv_dir / f"{session_id}.db"
+    wal_file = conv_dir / f"{session_id}.db-wal"
+
+    parts = []
+    for path in (db_file, wal_file):
+        try:
+            if path.is_file():
+                st = path.stat()
+                parts.append(f"{path.name}:{st.st_mtime_ns}:{st.st_size}")
+        except OSError:
+            continue
+
+    return "|".join(parts) if parts else None
 
 
 def locate_agy_binary() -> Dict[str, Any]:

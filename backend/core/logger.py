@@ -37,7 +37,7 @@ class LogBroadcaster:
             self.history.pop(0)
 
         # Print to console as well
-        print(f"[{entry['timestamp']}] [{entry['level']}] [{entry['source']}] {message} {meta}")
+        print(f"[{entry['timestamp']}] [{entry['level']}] [{entry['source']}] {message} {meta}", flush=True)
 
         disconnected = []
         for ws in self.connections:

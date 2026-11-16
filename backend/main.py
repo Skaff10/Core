@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
@@ -17,9 +18,11 @@ from api.routes_system import router as system_router
 from api.routes_sync import router as sync_router
 from api.routes_files import router as files_router
 from api.routes_agent import router as agent_router
-from api.websockets import router as ws_router
+from api.routes_obs import router as obs_router
+from api.websockets import router as ws_router, mobile_bus
 from api.ws_agent import router as ws_agent_router
 from services.agent.hub import agent_hub
+from services.obs_controller import obs_controller
 
 load_dotenv()
 
@@ -45,8 +48,19 @@ async def lifespan(app: FastAPI):
         "SECURITY",
         f"Loaded {len(cfg.quick_actions)} Quick Actions, {len(cfg.whitelisted_paths)} Whitelisted Paths | Phone Vault: {sync_path}",
     )
+
+    async def _broadcast_obs(status):
+        await mobile_bus.broadcast("obs_status", status)
+
+    obs_controller.on_status_change = _broadcast_obs
+    await obs_controller.start_monitor()
+    init_agent_task = asyncio.create_task(agent_hub.initialize())
+
     yield
-    await agent_hub.acp.stop()
+    init_agent_task.cancel()
+    await asyncio.gather(init_agent_task, return_exceptions=True)
+    await obs_controller.stop()
+    await agent_hub.shutdown()
     await logger_bus.log("WARN", "SHUTDOWN", "Core PC Server shutting down")
 
 
@@ -88,6 +102,7 @@ app.include_router(system_router)
 app.include_router(sync_router)
 app.include_router(files_router)
 app.include_router(agent_router)
+app.include_router(obs_router)
 app.include_router(ws_router)
 app.include_router(ws_agent_router)
 

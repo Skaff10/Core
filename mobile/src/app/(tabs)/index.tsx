@@ -3,12 +3,13 @@ import { ScrollView, View, StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { HeaderStatus } from "../../components/HeaderStatus";
 import { ForegroundCard } from "../../components/ForegroundCard";
+import { ObsControlCard } from "../../components/ObsControlCard";
 import { ActionGrid } from "../../components/ActionGrid";
 import { useConnectionStore } from "../../store/useConnectionStore";
 import { CoreApiClient } from "../../services/api";
 
 export default function HomeScreen() {
-  const { pcIp, pcPort, authToken, setQuickActions, setTelemetry, setConnectedState } =
+  const { pcIp, pcPort, authToken, setQuickActions, setTelemetry, setObsStatus, setConnectedState } =
     useConnectionStore();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -16,13 +17,17 @@ export default function HomeScreen() {
     if (!pcIp || !authToken) return;
     setRefreshing(true);
     try {
-      const [pingData, actions] = await Promise.all([
+      const [pingData, actions, obs] = await Promise.all([
         CoreApiClient.ping(pcIp, pcPort, authToken),
         CoreApiClient.fetchQuickActions(pcIp, pcPort, authToken),
+        CoreApiClient.fetchObsStatus(pcIp, pcPort, authToken).catch(() => null),
       ]);
       setConnectedState(true, null);
       if (pingData.telemetry) {
         setTelemetry(pingData.telemetry);
+      }
+      if (obs) {
+        setObsStatus(obs);
       }
       setQuickActions(actions);
     } catch (err: any) {
@@ -30,7 +35,7 @@ export default function HomeScreen() {
     } finally {
       setRefreshing(false);
     }
-  }, [pcIp, pcPort, authToken, setQuickActions, setTelemetry, setConnectedState]);
+  }, [pcIp, pcPort, authToken, setQuickActions, setTelemetry, setObsStatus, setConnectedState]);
 
   useEffect(() => {
     syncDashboard();
@@ -45,6 +50,7 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
       >
         <ForegroundCard />
+        <ObsControlCard />
         <ActionGrid onRefresh={syncDashboard} refreshing={refreshing} />
       </ScrollView>
     </SafeAreaView>

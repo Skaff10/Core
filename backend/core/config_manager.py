@@ -39,12 +39,19 @@ class CoreConfig(BaseModel):
     sync_auto_sort: bool = True
     agent_enabled: bool = True
     agy_path: Optional[str] = None
+    agy_app_data_dir: str = "antigravity"
     agent_default_model: str = "claude-sonnet-5-5"
     agent_default_mode: str = "default"
     agent_project_roots: List[str] = Field(default_factory=list)
     agent_max_loaded_sessions: int = 6
     agent_max_concurrent_turns: int = 2
     agent_permission_timeout_s: int = 0
+    obs_path: Optional[str] = None
+    obs_ws_host: str = "127.0.0.1"
+    obs_ws_port: Optional[int] = None
+    obs_ws_password: Optional[str] = None
+    obs_auto_enable_ws: bool = True
+    obs_minimize_to_tray: bool = False
 
 
 

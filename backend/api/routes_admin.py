@@ -8,6 +8,7 @@ from core.config_manager import config_manager
 from core.logger import logger_bus
 from api.websockets import mobile_bus
 from services.transfer_manager import transfer_manager
+from services.obs_controller import obs_controller
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"], dependencies=[Depends(require_local_admin)])
 
@@ -63,6 +64,7 @@ async def get_admin_state():
         "whitelisted_paths": paths_with_status,
         "sync_dir": cfg.sync_dir,
         "sync_auto_sort": cfg.sync_auto_sort,
+        "obs": obs_controller.build_status_snapshot(),
     }
 
 
@@ -198,5 +200,20 @@ async def push_file_to_mobile(payload: PushToMobileRequest):
         transfer.file_path,
     )
     return {"success": True, "transfer": transfer_data}
+
+
+@router.post("/obs/enable-ws")
+async def enable_obs_websocket_admin():
+    running, _ = obs_controller.is_obs_running()
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail="Close OBS Studio first (or enable Tools -> WebSocket Server Settings inside OBS).",
+        )
+    ok = obs_controller.enable_ws_when_stopped()
+    if not ok:
+        raise HTTPException(status_code=500, detail="Could not update OBS WebSocket config.json.")
+    await logger_bus.log("INFO", "OBS", "Enabled obs-websocket server in OBS config.json (backup saved)")
+    return {"success": True, "obs": obs_controller.build_status_snapshot()}
 
 

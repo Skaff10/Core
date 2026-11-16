@@ -10,7 +10,7 @@ import {
   Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import {
   ArrowLeft,
   Plus,
@@ -32,8 +32,10 @@ import { AgentProject, AgentSession } from "../../../types/agent";
 
 const MODEL_OPTIONS = [
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (Fast & Smart)" },
-  { id: "claude-opus-5-5", label: "Claude Opus 5.5 (Deep Reasoning)" },
+  { id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen" },
   { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (Ultra Fast)" },
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5 (Deep Reasoning)" },
+  { id: "gemini-4-argon", label: "Gemini 4 Argon" },
 ];
 
 const MODE_OPTIONS = [
@@ -81,6 +83,12 @@ export default function ProjectSessionsScreen() {
     setLoading(true);
     loadSessions().finally(() => setLoading(false));
   }, [loadSessions]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadSessions();
+    }, [loadSessions])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -167,6 +175,11 @@ export default function ProjectSessionsScreen() {
           </View>
 
           <View style={styles.badgesRow}>
+            {item.activeOnPc && (
+              <View style={[styles.badge, styles.badgePc]}>
+                <Text style={styles.badgePcText}>PC LIVE</Text>
+              </View>
+            )}
             {item.isAwaitingPermission && (
               <View style={[styles.badge, styles.badgeApproval]}>
                 <AlertTriangle size={10} color="#F59E0B" />
@@ -484,6 +497,17 @@ const styles = StyleSheet.create({
   },
   badgeRunningText: {
     color: "#06B6D4",
+    fontSize: 8,
+    fontFamily: "monospace",
+    fontWeight: "900",
+  },
+  badgePc: {
+    backgroundColor: "#064E3B",
+    borderWidth: 1,
+    borderColor: "#10B981",
+  },
+  badgePcText: {
+    color: "#10B981",
     fontSize: 8,
     fontFamily: "monospace",
     fontWeight: "900",

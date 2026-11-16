@@ -29,6 +29,8 @@ const els = {
   logLineCounter: document.getElementById("log-line-counter"),
   clearLogsBtn: document.getElementById("clear-logs-btn"),
   testPingBtn: document.getElementById("test-ping-btn"),
+  obsAdminStatus: document.getElementById("obs-admin-status"),
+  obsEnableWsBtn: document.getElementById("obs-enable-ws-btn"),
 };
 
 function escapeHtml(str) {
@@ -57,6 +59,15 @@ async function fetchAdminState() {
   renderPaths(data.whitelisted_paths);
   if (els.syncDirInput && data.sync_dir) {
     els.syncDirInput.value = data.sync_dir;
+  }
+  if (els.obsAdminStatus && data.obs) {
+    const obs = data.obs;
+    els.obsAdminStatus.textContent = obs.installed
+      ? `STATE: ${String(obs.state || "offline").toUpperCase()} | WS CONFIG: ${obs.ws_configured_enabled ? "ENABLED" : "DISABLED"} (PORT ${obs.ws_port || 4455})`
+      : "OBS Studio not detected on PC";
+    if (els.obsEnableWsBtn) {
+      els.obsEnableWsBtn.style.display = obs.installed && !obs.ws_configured_enabled ? "inline-flex" : "none";
+    }
   }
 }
 
@@ -201,6 +212,17 @@ els.testPingBtn.addEventListener("click", async () => {
     headers: { Authorization: `Bearer ${state.authToken}` },
   });
 });
+
+if (els.obsEnableWsBtn) {
+  els.obsEnableWsBtn.addEventListener("click", async () => {
+    const res = await fetch("/api/admin/obs/enable-ws", { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.detail || "Failed enabling OBS WebSocket");
+    }
+    await fetchAdminState();
+  });
+}
 
 els.clearLogsBtn.addEventListener("click", () => {
   els.logTerminal.innerHTML = "";

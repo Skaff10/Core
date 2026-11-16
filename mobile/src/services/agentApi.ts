@@ -1,10 +1,38 @@
-import { AgentProject, AgentSession, AgentMessage } from "../types/agent";
+import { AgentProject, AgentSession, AgentMessage, AgentConfigOption } from "../types/agent";
 
 function buildHeaders(token: string) {
   return {
     "Content-Type": "application/json",
     Authorization: `Bearer ${token.trim()}`,
   };
+}
+
+export interface SessionHistoryPayload {
+  messages: AgentMessage[];
+  configOptions: AgentConfigOption[];
+  commands: Array<{ name: string; description: string }>;
+  session?: any;
+  syncError?: string | null;
+}
+
+export function mapBackendMessages(rawList: any[]): AgentMessage[] {
+  return (rawList || []).map((m: any) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content || "",
+    thoughts: m.thoughts || "",
+    timestamp: m.created_at ? new Date(m.created_at).toLocaleTimeString() : "",
+    stop_reason: m.stop_reason || "",
+    tools: (m.tools || []).map((t: any) => ({
+      tool_call_id: t.tool_call_id,
+      name: t.name,
+      title: t.title || t.name,
+      kind: t.kind,
+      args: t.args,
+      status: t.status,
+      preview: t.raw_output || t.preview || "",
+    })),
+  }));
 }
 
 export async function fetchAgentStatus(
@@ -56,7 +84,10 @@ export async function createNewSession(
     headers: buildHeaders(token),
     body: JSON.stringify({ cwd, model, mode }),
   });
-  if (!res.ok) throw new Error(`Create session HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.detail || `Create session HTTP ${res.status}`);
+  }
   return res.json();
 }
 
@@ -65,33 +96,49 @@ export async function fetchSessionHistory(
   port: string,
   token: string,
   sessionId: string,
+  cwd?: string | null,
   limit = 50,
   before?: string
-): Promise<AgentMessage[]> {
-  let url = `http://${ip}:${port}/api/agent/sessions/${sessionId}/history?limit=${limit}`;
+): Promise<SessionHistoryPayload> {
+  let url = `http://${ip}:${port}/api/agent/sessions/${encodeURIComponent(sessionId)}/history?limit=${limit}`;
+  if (cwd) url += `&cwd=${encodeURIComponent(cwd)}`;
   if (before) url += `&before=${encodeURIComponent(before)}`;
+
   const res = await fetch(url, { headers: buildHeaders(token) });
   if (!res.ok) throw new Error(`History HTTP ${res.status}`);
   const data = await res.json();
-  const rawList = data.messages || [];
 
-  return rawList.map((m: any) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content || "",
-    thoughts: m.thoughts || "",
-    timestamp: m.created_at ? new Date(m.created_at).toLocaleTimeString() : "",
-    stop_reason: m.stop_reason || "",
-    tools: (m.tools || []).map((t: any) => ({
-      tool_call_id: t.tool_call_id,
-      name: t.name,
-      title: t.title || t.name,
-      kind: t.kind,
-      args: t.args,
-      status: t.status,
-      preview: t.raw_output || "",
-    })),
-  }));
+  return {
+    messages: mapBackendMessages(data.messages || []),
+    configOptions: data.config_options || [],
+    commands: data.commands || [],
+    session: data.session,
+    syncError: data.sync_error || null,
+  };
+}
+
+export async function syncSessionFromPc(
+  ip: string,
+  port: string,
+  token: string,
+  sessionId: string,
+  cwd?: string | null,
+  force = true
+): Promise<SessionHistoryPayload> {
+  const url = `http://${ip}:${port}/api/agent/sessions/${encodeURIComponent(sessionId)}/sync`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ cwd: cwd || undefined, force }),
+  });
+  if (!res.ok) throw new Error(`Sync HTTP ${res.status}`);
+  const data = await res.json();
+
+  return {
+    messages: mapBackendMessages(data.messages || []),
+    configOptions: data.config_options || [],
+    commands: [],
+  };
 }
 
 export async function cancelTurn(
@@ -100,7 +147,7 @@ export async function cancelTurn(
   token: string,
   sessionId: string
 ): Promise<void> {
-  const url = `http://${ip}:${port}/api/agent/sessions/${sessionId}/cancel`;
+  const url = `http://${ip}:${port}/api/agent/sessions/${encodeURIComponent(sessionId)}/cancel`;
   await fetch(url, { method: "POST", headers: buildHeaders(token) });
 }
 
@@ -112,7 +159,7 @@ export async function respondPermission(
   requestId: string,
   optionId?: string
 ): Promise<void> {
-  const url = `http://${ip}:${port}/api/agent/sessions/${sessionId}/permission`;
+  const url = `http://${ip}:${port}/api/agent/sessions/${encodeURIComponent(sessionId)}/permission`;
   await fetch(url, {
     method: "POST",
     headers: buildHeaders(token),
@@ -128,11 +175,10 @@ export async function setSessionOption(
   configId: string,
   value: string
 ): Promise<void> {
-  const url = `http://${ip}:${port}/api/agent/sessions/${sessionId}/options`;
+  const url = `http://${ip}:${port}/api/agent/sessions/${encodeURIComponent(sessionId)}/options`;
   await fetch(url, {
     method: "POST",
     headers: buildHeaders(token),
     body: JSON.stringify({ config_id: configId, value }),
   });
 }
-

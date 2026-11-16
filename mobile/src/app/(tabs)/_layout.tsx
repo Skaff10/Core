@@ -4,6 +4,8 @@ import { Tabs } from "expo-router";
 import * as Notifications from "expo-notifications";
 import { Terminal, MessageSquareCode, FolderTree, Sliders, CheckCircle2, AlertCircle } from "lucide-react-native";
 import { useForegroundWebSocket, LaunchNotificationEvent } from "../../services/ws";
+import { agentSocket } from "../../services/agentSocket";
+import { useConnectionStore } from "../../store/useConnectionStore";
 import { registerSixHourCameraSync } from "../../services/syncTask";
 import { onIncomingFileReceived, ReceivedFileResult } from "../../services/fileReceiver";
 
@@ -18,7 +20,14 @@ Notifications.setNotificationHandler({
 });
 
 export default function TabLayout() {
+  const { pcIp, pcPort, authToken } = useConnectionStore();
   const [transferBanner, setTransferBanner] = useState<ReceivedFileResult | null>(null);
+
+  useEffect(() => {
+    if (pcIp && authToken) {
+      agentSocket.init(pcIp, pcPort, authToken);
+    }
+  }, [pcIp, pcPort, authToken]);
 
   useEffect(() => {
     Notifications.requestPermissionsAsync().catch(() => {});

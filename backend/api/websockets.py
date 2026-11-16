@@ -7,6 +7,7 @@ from core.logger import logger_bus
 from services.window_monitor import get_foreground_telemetry
 from services.cli_runner import run_cli_agent_stream
 from services.web_ai_relay import relay_prompt_to_web_ai
+from services.obs_controller import obs_controller
 
 router = APIRouter(tags=["WebSockets"])
 
@@ -75,6 +76,7 @@ async def websocket_foreground_monitor(websocket: WebSocket):
     )
 
     try:
+        await websocket.send_json({"type": "obs_status", "data": obs_controller.build_status_snapshot()})
         while True:
             telemetry = get_foreground_telemetry()
             await websocket.send_json({"type": "foreground", "data": telemetry})

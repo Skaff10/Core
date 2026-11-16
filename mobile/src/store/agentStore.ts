@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   AgentProject,
   AgentMessage,
+  AgentConfigOption,
   SessionTurnState,
   ToolCallItem,
 } from "../types/agent";
@@ -14,6 +15,9 @@ interface AgentStoreState {
   activeSessionTitle: string | null;
   messagesBySession: Record<string, AgentMessage[]>;
   sessionStates: Record<string, SessionTurnState>;
+  lastSeqBySession: Record<string, number>;
+  configOptionsBySession: Record<string, AgentConfigOption[]>;
+  commandsBySession: Record<string, Array<{ name: string; description: string }>>;
   availableCommands: Array<{ name: string; description: string }>;
   selectedModel: string;
   selectedMode: string;
@@ -27,13 +31,36 @@ interface AgentStoreState {
     title?: string | null
   ) => void;
   setHistory: (sessionId: string, messages: AgentMessage[]) => void;
+  setSessionConfigOptions: (sessionId: string, options: AgentConfigOption[]) => void;
+  setSessionCommands: (sessionId: string, commands: Array<{ name: string; description: string }>) => void;
   appendUserMessage: (sessionId: string, message: AgentMessage) => void;
   setSocketConnected: (connected: boolean) => void;
   setSelectedModel: (model: string) => void;
   setSelectedMode: (mode: string) => void;
-  handleSessionState: (sessionId: string, data: Partial<SessionTurnState>) => void;
+  handleSessionState: (sessionId: string, data: any) => void;
   handleSocketEvent: (event: any) => void;
   clearSessionHistory: (sessionId: string) => void;
+}
+
+function ensureStreamingAssistant(msgs: AgentMessage[]): { list: AgentMessage[]; last: AgentMessage } {
+  const copy = [...msgs];
+  const tail = copy[copy.length - 1];
+  if (tail && tail.role === "assistant" && tail.streaming) {
+    const cloned = { ...tail, tools: tail.tools ? [...tail.tools] : undefined };
+    copy[copy.length - 1] = cloned;
+    return { list: copy, last: cloned };
+  }
+  const created: AgentMessage = {
+    id: `ai-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    role: "assistant",
+    content: "",
+    thoughts: "",
+    timestamp: new Date().toLocaleTimeString(),
+    streaming: true,
+    tools: [],
+  };
+  copy.push(created);
+  return { list: copy, last: created };
 }
 
 export const useAgentStore = create<AgentStoreState>((set, get) => ({
@@ -44,6 +71,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   activeSessionTitle: null,
   messagesBySession: {},
   sessionStates: {},
+  lastSeqBySession: {},
+  configOptionsBySession: {},
+  commandsBySession: {},
   availableCommands: [],
   selectedModel: "claude-sonnet-5-5",
   selectedMode: "default",
@@ -60,16 +90,54 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     }),
 
   setHistory: (sessionId, messages) =>
+    set((state) => {
+      const existing = state.messagesBySession[sessionId] || [];
+      const streamingTail = existing.find((m) => m.role === "assistant" && m.streaming);
+      const nextList = streamingTail ? [...messages, streamingTail] : messages;
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [sessionId]: nextList,
+        },
+      };
+    }),
+
+  setSessionConfigOptions: (sessionId, options) =>
+    set((state) => {
+      const modelOpt = options.find((o) => o.id === "model");
+      const modeOpt = options.find((o) => o.id === "mode");
+      return {
+        configOptionsBySession: {
+          ...state.configOptionsBySession,
+          [sessionId]: options,
+        },
+        selectedModel:
+          state.activeSessionId === sessionId && modelOpt?.currentValue
+            ? modelOpt.currentValue
+            : state.selectedModel,
+        selectedMode:
+          state.activeSessionId === sessionId && modeOpt?.currentValue
+            ? modeOpt.currentValue
+            : state.selectedMode,
+      };
+    }),
+
+  setSessionCommands: (sessionId, commands) =>
     set((state) => ({
-      messagesBySession: {
-        ...state.messagesBySession,
-        [sessionId]: messages,
+      commandsBySession: {
+        ...state.commandsBySession,
+        [sessionId]: commands,
       },
+      availableCommands:
+        state.activeSessionId === sessionId ? commands : state.availableCommands,
     })),
 
   appendUserMessage: (sessionId, message) =>
     set((state) => {
       const existing = state.messagesBySession[sessionId] || [];
+      if (existing.some((m) => m.id === message.id)) {
+        return state;
+      }
       return {
         messagesBySession: {
           ...state.messagesBySession,
@@ -97,11 +165,47 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         pendingPermission: null,
         queueDepth: 0,
       };
+      const nextTurnState: SessionTurnState = {
+        state: data.state ?? current.state,
+        pendingPermission:
+          data.pending_permission !== undefined
+            ? data.pending_permission
+            : data.pendingPermission !== undefined
+            ? data.pendingPermission
+            : current.pendingPermission,
+        queueDepth:
+          data.queue_depth !== undefined
+            ? data.queue_depth
+            : data.queueDepth !== undefined
+            ? data.queueDepth
+            : current.queueDepth,
+      };
+
+      const nextConfigs =
+        Array.isArray(data.config_options) && data.config_options.length > 0
+          ? { ...state.configOptionsBySession, [sessionId]: data.config_options }
+          : state.configOptionsBySession;
+
+      const nextCmds =
+        Array.isArray(data.commands) && data.commands.length > 0
+          ? { ...state.commandsBySession, [sessionId]: data.commands }
+          : state.commandsBySession;
+
       return {
         sessionStates: {
           ...state.sessionStates,
-          [sessionId]: { ...current, ...data },
+          [sessionId]: nextTurnState,
         },
+        configOptionsBySession: nextConfigs,
+        commandsBySession: nextCmds,
+        activeSessionTitle:
+          state.activeSessionId === sessionId && data.title
+            ? data.title
+            : state.activeSessionTitle,
+        activeSessionCwd:
+          state.activeSessionId === sessionId && data.cwd
+            ? data.cwd
+            : state.activeSessionCwd,
       };
     }),
 
@@ -109,10 +213,19 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     const sid = event.session_id;
     if (!sid) return;
 
+    const seq = typeof event.seq === "number" ? event.seq : 0;
     const kind = event.kind;
     const payload = event.payload || {};
 
     set((state) => {
+      const prevSeq = state.lastSeqBySession[sid] || 0;
+      if (seq > 0 && seq <= prevSeq) {
+        return state;
+      }
+
+      const nextSeqMap =
+        seq > 0 ? { ...state.lastSeqBySession, [sid]: seq } : state.lastSeqBySession;
+
       const msgs = [...(state.messagesBySession[sid] || [])];
       const curTurnState = state.sessionStates[sid] || {
         state: "idle",
@@ -120,22 +233,29 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         queueDepth: 0,
       };
 
-      if (kind === "agent_chunk") {
-        const text = payload.text || "";
-        const lastMsg = msgs[msgs.length - 1];
-        if (lastMsg && lastMsg.role === "assistant" && lastMsg.streaming) {
-          lastMsg.content += text;
-        } else {
+      if (kind === "user_message") {
+        const msgId = payload.id || `user-${seq || Date.now()}`;
+        if (!msgs.some((m) => m.id === msgId)) {
           msgs.push({
-            id: `ai-${Date.now()}`,
-            role: "assistant",
-            content: text,
+            id: msgId,
+            role: "user",
+            content: payload.text || "",
             timestamp: new Date().toLocaleTimeString(),
-            streaming: true,
           });
         }
         return {
+          lastSeqBySession: nextSeqMap,
           messagesBySession: { ...state.messagesBySession, [sid]: msgs },
+        };
+      }
+
+      if (kind === "agent_chunk") {
+        const text = payload.text || "";
+        const { list, last } = ensureStreamingAssistant(msgs);
+        last.content = (last.content || "") + text;
+        return {
+          lastSeqBySession: nextSeqMap,
+          messagesBySession: { ...state.messagesBySession, [sid]: list },
           sessionStates: {
             ...state.sessionStates,
             [sid]: { ...curTurnState, state: "running" },
@@ -145,40 +265,41 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 
       if (kind === "thought_chunk") {
         const text = payload.text || "";
-        const lastMsg = msgs[msgs.length - 1];
-        if (lastMsg && lastMsg.role === "assistant" && lastMsg.streaming) {
-          lastMsg.thoughts = (lastMsg.thoughts || "") + text;
-        }
+        const { list, last } = ensureStreamingAssistant(msgs);
+        last.thoughts = (last.thoughts || "") + text;
         return {
-          messagesBySession: { ...state.messagesBySession, [sid]: msgs },
+          lastSeqBySession: nextSeqMap,
+          messagesBySession: { ...state.messagesBySession, [sid]: list },
+          sessionStates: {
+            ...state.sessionStates,
+            [sid]: { ...curTurnState, state: "running" },
+          },
         };
       }
 
       if (kind === "tool_call") {
-        const lastMsg = msgs[msgs.length - 1];
+        const { list, last } = ensureStreamingAssistant(msgs);
+        const tools = [...(last.tools || [])];
+        const existingIdx = tools.findIndex((t) => t.tool_call_id === payload.tool_call_id);
         const newTool: ToolCallItem = {
           tool_call_id: payload.tool_call_id,
-          name: payload.name,
-          title: payload.title || payload.name,
-          kind: payload.kind,
+          name: payload.name || "tool",
+          title: payload.title || payload.name || "Tool Call",
+          kind: payload.kind || "other",
           args: payload.args,
           status: payload.status || "in_progress",
+          preview: payload.preview,
+          has_more: payload.has_more,
         };
-
-        if (lastMsg && lastMsg.role === "assistant") {
-          lastMsg.tools = [...(lastMsg.tools || []), newTool];
+        if (existingIdx >= 0) {
+          tools[existingIdx] = { ...tools[existingIdx], ...newTool };
         } else {
-          msgs.push({
-            id: `ai-${Date.now()}`,
-            role: "assistant",
-            content: "",
-            timestamp: new Date().toLocaleTimeString(),
-            streaming: true,
-            tools: [newTool],
-          });
+          tools.push(newTool);
         }
+        last.tools = tools;
         return {
-          messagesBySession: { ...state.messagesBySession, [sid]: msgs },
+          lastSeqBySession: nextSeqMap,
+          messagesBySession: { ...state.messagesBySession, [sid]: list },
         };
       }
 
@@ -186,24 +307,33 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         const tid = payload.tool_call_id;
         const status = payload.status;
         const preview = payload.preview;
-
-        msgs.forEach((m) => {
-          if (m.tools) {
-            m.tools.forEach((t) => {
-              if (t.tool_call_id === tid) {
-                t.status = status;
-                if (preview !== undefined) t.preview = preview;
-              }
-            });
+        const updatedMsgs = msgs.map((m) => {
+          if (!m.tools || !m.tools.some((t) => t.tool_call_id === tid)) {
+            return m;
           }
+          return {
+            ...m,
+            tools: m.tools.map((t) =>
+              t.tool_call_id === tid
+                ? {
+                    ...t,
+                    status: status || t.status,
+                    preview: preview !== undefined ? preview : t.preview,
+                    has_more: payload.has_more !== undefined ? payload.has_more : t.has_more,
+                  }
+                : t
+            ),
+          };
         });
         return {
-          messagesBySession: { ...state.messagesBySession, [sid]: msgs },
+          lastSeqBySession: nextSeqMap,
+          messagesBySession: { ...state.messagesBySession, [sid]: updatedMsgs },
         };
       }
 
       if (kind === "permission_request") {
         return {
+          lastSeqBySession: nextSeqMap,
           sessionStates: {
             ...state.sessionStates,
             [sid]: {
@@ -221,6 +351,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 
       if (kind === "permission_resolved") {
         return {
+          lastSeqBySession: nextSeqMap,
           sessionStates: {
             ...state.sessionStates,
             [sid]: {
@@ -234,6 +365,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 
       if (kind === "turn_started") {
         return {
+          lastSeqBySession: nextSeqMap,
           sessionStates: {
             ...state.sessionStates,
             [sid]: { ...curTurnState, state: "running" },
@@ -242,12 +374,16 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       }
 
       if (kind === "turn_ended") {
-        const lastMsg = msgs[msgs.length - 1];
-        if (lastMsg && lastMsg.role === "assistant") {
-          lastMsg.streaming = false;
-          lastMsg.stop_reason = payload.stop_reason;
+        const lastIdx = msgs.length - 1;
+        if (lastIdx >= 0 && msgs[lastIdx].role === "assistant") {
+          msgs[lastIdx] = {
+            ...msgs[lastIdx],
+            streaming: false,
+            stop_reason: payload.stop_reason,
+          };
         }
         return {
+          lastSeqBySession: nextSeqMap,
           messagesBySession: { ...state.messagesBySession, [sid]: msgs },
           sessionStates: {
             ...state.sessionStates,
@@ -255,6 +391,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
               ...curTurnState,
               state: "idle",
               pendingPermission: null,
+              queueDepth: Math.max(0, (curTurnState.queueDepth || 0) - 1),
             },
           },
         };
@@ -262,7 +399,6 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 
       if (kind === "title") {
         const newTitle = payload.title;
-        // Update session title in projects list
         const updatedProjs = state.projects.map((p) => ({
           ...p,
           sessions: p.sessions.map((s) =>
@@ -270,6 +406,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
           ),
         }));
         return {
+          lastSeqBySession: nextSeqMap,
           activeSessionTitle:
             state.activeSessionId === sid ? newTitle : state.activeSessionTitle,
           projects: updatedProjs,
@@ -277,29 +414,61 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       }
 
       if (kind === "commands") {
-        return { availableCommands: payload.commands || [] };
+        const cmds = payload.commands || [];
+        return {
+          lastSeqBySession: nextSeqMap,
+          commandsBySession: { ...state.commandsBySession, [sid]: cmds },
+          availableCommands: state.activeSessionId === sid ? cmds : state.availableCommands,
+        };
+      }
+
+      if (kind === "config") {
+        const opts: AgentConfigOption[] =
+          payload.configOptions || state.configOptionsBySession[sid] || [];
+        const updatedOpts = payload.configOptions
+          ? payload.configOptions
+          : opts.map((o) =>
+              o.id === payload.configId ? { ...o, currentValue: payload.value } : o
+            );
+        return {
+          lastSeqBySession: nextSeqMap,
+          configOptionsBySession: {
+            ...state.configOptionsBySession,
+            [sid]: updatedOpts,
+          },
+          selectedModel:
+            payload.configId === "model" && state.activeSessionId === sid
+              ? payload.value
+              : state.selectedModel,
+          selectedMode:
+            payload.configId === "mode" && state.activeSessionId === sid
+              ? payload.value
+              : state.selectedMode,
+        };
       }
 
       if (kind === "warning") {
         msgs.push({
-          id: `warn-${Date.now()}`,
+          id: `warn-${seq || Date.now()}`,
           role: "system",
           content: `⚠ [${payload.kind?.toUpperCase() || "WARNING"}] ${payload.message}`,
           timestamp: new Date().toLocaleTimeString(),
         });
         return {
+          lastSeqBySession: nextSeqMap,
           messagesBySession: { ...state.messagesBySession, [sid]: msgs },
         };
       }
 
       if (kind === "error") {
         msgs.push({
-          id: `err-${Date.now()}`,
+          id: `err-${seq || Date.now()}`,
           role: "system",
           content: `ERR // ${payload.message}`,
           timestamp: new Date().toLocaleTimeString(),
         });
         return {
+          lastSeqBySession: nextSeqMap,
           messagesBySession: { ...state.messagesBySession, [sid]: msgs },
           sessionStates: {
             ...state.sessionStates,
@@ -309,11 +478,15 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       }
 
       if (kind === "queued") {
-        const lastUser = msgs[msgs.length - 1];
-        if (lastUser && lastUser.role === "user") {
-          lastUser.queue_position = payload.queue_position;
+        const lastUserIdx = msgs.length - 1;
+        if (lastUserIdx >= 0 && msgs[lastUserIdx].role === "user") {
+          msgs[lastUserIdx] = {
+            ...msgs[lastUserIdx],
+            queue_position: payload.queue_position,
+          };
         }
         return {
+          lastSeqBySession: nextSeqMap,
           messagesBySession: { ...state.messagesBySession, [sid]: msgs },
           sessionStates: {
             ...state.sessionStates,
@@ -325,8 +498,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         };
       }
 
-      return state;
+      return { ...state, lastSeqBySession: nextSeqMap };
     });
   },
 }));
-
