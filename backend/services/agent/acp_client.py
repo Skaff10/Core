@@ -10,9 +10,10 @@ from typing import Dict, Any, Optional, Callable, Awaitable, List
 import psutil
 from core.config_manager import config_manager
 from core.logger import logger_bus
+from core.paths import get_data_dir
 from services.agent.agy_locator import locate_agy_binary
 
-LOGS_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
+LOGS_DIR = get_data_dir() / "logs"
 
 
 class AcpClient:

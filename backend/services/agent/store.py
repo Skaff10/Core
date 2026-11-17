@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
+from core.paths import get_data_dir
 from services.agent.events import build_phone_event
 
-DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "agent.db"
+DB_PATH = get_data_dir() / "data" / "agent.db"
 
 
 def _iso_now() -> str:

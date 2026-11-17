@@ -4,7 +4,7 @@ import subprocess
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from core.auth import require_local_admin
-from core.config_manager import config_manager
+from core.config_manager import config_manager, resolve_server_port
 from core.logger import logger_bus
 from api.websockets import mobile_bus
 from services.transfer_manager import transfer_manager
@@ -57,7 +57,7 @@ async def get_admin_state():
     return {
         "hostname": socket.gethostname(),
         "lan_ip": get_lan_ipv4(),
-        "port": int(os.getenv("PORT", "8000")),
+        "port": resolve_server_port(),
         "auth_token": cfg.auth_token,
         "pin_code": cfg.pin_code,
         "quick_actions": cfg.quick_actions,

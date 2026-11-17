@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+from core.paths import get_data_dir
+
+CONFIG_PATH = get_data_dir() / "config.json"
 
 
 DEFAULT_SYNC_DIR = r"F:\From_phone"
@@ -35,6 +37,7 @@ class CoreConfig(BaseModel):
     pin_code: str
     quick_actions: List[QuickAction]
     whitelisted_paths: List[str]
+    server_port: int = 8000
     sync_dir: str = Field(default_factory=lambda: os.getenv("SYNC_DIR", DEFAULT_SYNC_DIR))
     sync_auto_sort: bool = True
     agent_enabled: bool = True
@@ -177,5 +180,32 @@ class ConfigManager:
         }
 
 
+    def set_server_port(self, port: int) -> int:
+        if port < 1 or port > 65535:
+            raise ValueError(f"Port must be between 1 and 65535 (got {port})")
+        config = self.load()
+        config.server_port = int(port)
+        self.save(config)
+        return config.server_port
+
+
 config_manager = ConfigManager()
+
+
+def resolve_server_port() -> int:
+    env_port = os.getenv("PORT", "").strip()
+    if env_port:
+        try:
+            p = int(env_port)
+            if 1 <= p <= 65535:
+                return p
+        except ValueError:
+            pass
+    try:
+        cfg = config_manager.load()
+        if 1 <= int(cfg.server_port) <= 65535:
+            return int(cfg.server_port)
+    except Exception:
+        pass
+    return 8000
 

@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import Dict
 from core.logger import logger_bus
+from core.paths import get_data_dir
 
 WEB_AI_TARGETS: Dict[str, Dict[str, str]] = {
     "chatgpt": {
@@ -25,7 +26,7 @@ WEB_AI_TARGETS: Dict[str, Dict[str, str]] = {
     },
 }
 
-USER_DATA_DIR = Path(__file__).resolve().parent.parent / ".playwright_profile"
+USER_DATA_DIR = get_data_dir() / ".playwright_profile"
 
 
 async def relay_prompt_to_web_ai(target_key: str, prompt: str) -> str:

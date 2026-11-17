@@ -6,6 +6,8 @@ __pycache__/
 node_modules/
 .expo/
 dist/
+backend/installer/build/
+backend/installer/dist/
 backend/data/
 backend/logs/
 backend/.playwright_profile/

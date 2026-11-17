@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,8 +12,9 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from core.auth import require_local_admin
-from core.config_manager import config_manager, ensure_sync_directories
+from core.config_manager import config_manager, ensure_sync_directories, resolve_server_port
 from core.logger import logger_bus
+from core.paths import get_bundle_dir, get_data_dir, is_frozen
 from api.routes_admin import router as admin_router, get_lan_ipv4
 from api.routes_system import router as system_router
 from api.routes_sync import router as sync_router
@@ -24,9 +26,14 @@ from api.ws_agent import router as ws_agent_router
 from services.agent.hub import agent_hub
 from services.obs_controller import obs_controller
 
-load_dotenv()
+DATA_DIR = get_data_dir()
+env_file = DATA_DIR / ".env"
+if env_file.is_file():
+    load_dotenv(dotenv_path=env_file)
+else:
+    load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = get_bundle_dir()
 WEB_PANEL_DIR = BASE_DIR / "web_panel"
 
 
@@ -34,7 +41,7 @@ WEB_PANEL_DIR = BASE_DIR / "web_panel"
 async def lifespan(app: FastAPI):
     cfg = config_manager.load()
     lan_ip = get_lan_ipv4()
-    port = int(os.getenv("PORT", "8000"))
+    port = resolve_server_port()
     sync_path = ensure_sync_directories(cfg.sync_dir, cfg.sync_auto_sort)
 
     await logger_bus.log(
@@ -116,5 +123,8 @@ async def serve_web_control_panel():
 
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8000"))
-    uvicorn.run("main:app", host=host, port=port, reload=False)
+    port = resolve_server_port()
+    run_kwargs = {"host": host, "port": port, "reload": False}
+    if is_frozen() or sys.stdout is None:
+        run_kwargs["log_config"] = None
+    uvicorn.run(app, **run_kwargs)
