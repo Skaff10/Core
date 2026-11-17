@@ -1,7 +1,11 @@
 import React from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, Text, StyleSheet } from "react-native";
 import { ShieldAlert, Check, X } from "lucide-react-native";
 import { PermissionRequestPayload, PermissionOption } from "../../types/agent";
+import { CoreCard } from "../ui/CoreCard";
+import { TactilePressable } from "../ui/TactilePressable";
+import { CORE_COLORS, CORE_RADIUS } from "../../theme/tokens";
+import { CORE_TYPOGRAPHY } from "../../theme/typography";
 
 interface Props {
   permission: PermissionRequestPayload;
@@ -36,10 +40,18 @@ export const PermissionCard: React.FC<Props> = ({ permission, onRespond }) => {
   };
 
   return (
-    <View style={styles.container}>
+    <CoreCard
+      variant="panel"
+      elevation="raised"
+      accentBorderColor={CORE_COLORS.amberBorder}
+      accentFillColor="rgba(245, 158, 11, 0.08)"
+      style={styles.container}
+    >
       <View style={styles.header}>
-        <ShieldAlert size={16} color="#F59E0B" />
-        <Text style={styles.headerText}>PERMISSION REQUIRED ON PC</Text>
+        <View style={styles.iconWell}>
+          <ShieldAlert size={16} color={CORE_COLORS.amber} />
+        </View>
+        <Text style={styles.headerText}>Permission Required on PC</Text>
       </View>
 
       <Text style={styles.title}>{toolTitle}</Text>
@@ -56,105 +68,109 @@ export const PermissionCard: React.FC<Props> = ({ permission, onRespond }) => {
         {rawOptions.map((opt) => {
           const reject = isRejectOption(opt);
           return (
-            <TouchableOpacity
-              key={opt.optionId}
-              style={[styles.btn, reject ? styles.denyBtn : styles.allowBtn]}
-              activeOpacity={0.8}
-              onPress={() => onRespond(opt.optionId)}
-            >
-              {reject ? (
-                <X size={14} color="#EF4444" />
-              ) : (
-                <Check size={14} color="#090D16" />
-              )}
-              <Text
-                style={reject ? styles.denyText : styles.allowText}
-                numberOfLines={1}
+            <View key={opt.optionId} style={styles.btnWrap}>
+              <TactilePressable
+                haptic
+                style={[styles.btn, reject ? styles.denyBtn : styles.allowBtn]}
+                onPress={() => onRespond(opt.optionId)}
               >
-                {opt.name}
-              </Text>
-            </TouchableOpacity>
+                {reject ? (
+                  <X size={15} color={CORE_COLORS.coral} />
+                ) : (
+                  <Check size={15} color={CORE_COLORS.textInverse} />
+                )}
+                <Text
+                  style={reject ? styles.denyText : styles.allowText}
+                  numberOfLines={1}
+                >
+                  {opt.name}
+                </Text>
+              </TactilePressable>
+            </View>
           );
         })}
       </View>
-    </View>
+    </CoreCard>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: "#1C1917",
-    borderWidth: 1.5,
-    borderColor: "#F59E0B",
-    borderRadius: 6,
-    padding: 12,
+    padding: 16,
     marginVertical: 8,
-    gap: 8,
+    gap: 10,
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
+    gap: 8,
+  },
+  iconWell: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    backgroundColor: CORE_COLORS.amberSoft,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.amberBorder,
+    alignItems: "center",
+    justifyContent: "center",
   },
   headerText: {
-    color: "#F59E0B",
-    fontSize: 10.5,
-    fontFamily: "monospace",
-    fontWeight: "900",
-    letterSpacing: 0.8,
+    ...CORE_TYPOGRAPHY.eyebrow,
+    color: CORE_COLORS.amber,
   },
   title: {
-    color: "#F8FAFC",
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: 15,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
   },
   argsBox: {
-    backgroundColor: "#0C0A09",
+    backgroundColor: CORE_COLORS.surfaceWell,
     borderWidth: 1,
-    borderColor: "#292524",
-    borderRadius: 4,
-    padding: 8,
+    borderColor: CORE_COLORS.borderSubtle,
+    borderRadius: CORE_RADIUS.md,
+    padding: 10,
   },
   argsText: {
-    color: "#E2E8F0",
-    fontSize: 11,
-    fontFamily: "monospace",
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textSecondary,
   },
   buttonRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    marginTop: 4,
+    marginTop: 2,
   },
-  btn: {
+  btnWrap: {
     flexGrow: 1,
     minWidth: "42%",
+  },
+  btn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 4,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    borderRadius: CORE_RADIUS.md,
+    borderCurve: "continuous",
     gap: 6,
   },
   denyBtn: {
-    backgroundColor: "#292524",
+    backgroundColor: CORE_COLORS.coralSoft,
     borderWidth: 1,
-    borderColor: "#EF4444",
+    borderColor: CORE_COLORS.coralBorder,
   },
   denyText: {
-    color: "#EF4444",
-    fontWeight: "700",
-    fontSize: 11.5,
-    fontFamily: "monospace",
+    color: CORE_COLORS.coral,
+    fontWeight: "600",
+    fontSize: 13,
   },
   allowBtn: {
-    backgroundColor: "#10B981",
+    backgroundColor: CORE_COLORS.emeraldFill,
   },
   allowText: {
-    color: "#090D16",
-    fontWeight: "900",
-    fontSize: 11.5,
-    fontFamily: "monospace",
+    color: CORE_COLORS.textInverse,
+    fontWeight: "700",
+    fontSize: 13,
   },
 });

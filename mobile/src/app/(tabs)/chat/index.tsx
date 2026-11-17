@@ -1,25 +1,28 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
   Text,
   TextInput,
-  TouchableOpacity,
   FlatList,
   StyleSheet,
   RefreshControl,
-  ActivityIndicator,
+  Pressable,
+  Animated,
+  Platform,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
 import {
   FolderGit2,
   Monitor,
   Search,
-  Sparkles,
   AlertTriangle,
   PlayCircle,
   RefreshCw,
   FolderOpen,
+  X,
+  ChevronRight,
+  MessageSquare,
 } from "lucide-react-native";
 import { HeaderStatus } from "../../../components/HeaderStatus";
 import { useConnectionStore } from "../../../store/useConnectionStore";
@@ -27,17 +30,62 @@ import { useAgentStore } from "../../../store/agentStore";
 import { fetchAgentProjects } from "../../../services/agentApi";
 import { agentSocket } from "../../../services/agentSocket";
 import { AgentProject } from "../../../types/agent";
+import { useGlassTheme } from "../../../components/glassyui/glass-provider";
+import { GlassSurface } from "../../../components/glassyui/glass-surface";
+import { GlassBadge } from "../../../components/glassyui/glass-badge";
+import { GlassAlert } from "../../../components/glassyui/glass-alert";
+import { GlassSkeleton } from "../../../components/glassyui/glass-skeleton";
+import { CoreCard } from "../../../components/ui/CoreCard";
+import { TactilePressable } from "../../../components/ui/TactilePressable";
+import { AnimatedEntrance } from "../../../components/ui/MotionPrimitives";
+import { CORE_COLORS, CORE_RADIUS, CORE_SPACING } from "../../../theme/tokens";
+import { CORE_TYPOGRAPHY } from "../../../theme/typography";
+
+function formatLastActive(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) {
+    return `Today · ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) {
+    return "Yesterday";
+  }
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
 
 export default function ProjectsListScreen() {
   const router = useRouter();
-  const { pcIp, pcPort, authToken, isConnected } = useConnectionStore();
+  const insets = useSafeAreaInsets();
+  const { preferences } = useGlassTheme();
+  const { pcIp, pcPort, authToken } = useConnectionStore();
   const { projects, setProjects, socketConnected } = useAgentStore();
+
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Initialize persistent agent socket on mount
+  const hasAnimatedInitial = useRef(false);
+  const focusAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (preferences.reduceMotion) {
+      focusAnim.setValue(searchFocused ? 1 : 0);
+      return;
+    }
+    Animated.timing(focusAnim, {
+      toValue: searchFocused ? 1 : 0,
+      duration: 180,
+      useNativeDriver: false,
+    }).start();
+  }, [focusAnim, preferences.reduceMotion, searchFocused]);
+
   useEffect(() => {
     if (pcIp && authToken) {
       agentSocket.init(pcIp, pcPort, authToken);
@@ -51,13 +99,18 @@ export default function ProjectsListScreen() {
       const data = await fetchAgentProjects(pcIp, pcPort, authToken);
       setProjects(data);
     } catch (err: any) {
-      setErrorMsg(err?.message || "Failed loading projects");
+      setErrorMsg(err?.message || "Failed loading workspaces");
     }
   }, [pcIp, pcPort, authToken, setProjects]);
 
   useEffect(() => {
     setLoading(true);
-    loadProjects().finally(() => setLoading(false));
+    loadProjects().finally(() => {
+      setLoading(false);
+      setTimeout(() => {
+        hasAnimatedInitial.current = true;
+      }, 450);
+    });
   }, [loadProjects]);
 
   useFocusEffect(
@@ -81,146 +134,261 @@ export default function ProjectsListScreen() {
     );
   });
 
-  const renderProjectItem = ({ item }: { item: AgentProject }) => {
+  const searchBorderColor = focusAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [CORE_COLORS.borderDefault, CORE_COLORS.focusBorder],
+  });
+
+  const renderProjectItem = ({
+    item,
+    index,
+  }: {
+    item: AgentProject;
+    index: number;
+  }) => {
     const hasApproval = item.hasPendingPermission;
     const isRunning = item.hasRunningTurn;
+    const isPcOpen = item.openOnPc;
 
-    return (
-      <TouchableOpacity
-        style={[
-          styles.projectCard,
-          hasApproval && styles.cardApproval,
-          isRunning && styles.cardRunning,
-        ]}
-        activeOpacity={0.8}
+    const iconTint = hasApproval
+      ? CORE_COLORS.amber
+      : isRunning
+      ? CORE_COLORS.cyan
+      : isPcOpen
+      ? CORE_COLORS.emerald
+      : CORE_COLORS.textSecondary;
+
+    const iconBg = hasApproval
+      ? CORE_COLORS.amberSoft
+      : isRunning
+      ? CORE_COLORS.cyanSoft
+      : isPcOpen
+      ? CORE_COLORS.emeraldSoft
+      : CORE_COLORS.surfaceWell;
+
+    const iconBorder = hasApproval
+      ? CORE_COLORS.amberBorder
+      : isRunning
+      ? CORE_COLORS.cyanBorder
+      : isPcOpen
+      ? CORE_COLORS.emeraldBorder
+      : CORE_COLORS.borderSubtle;
+
+    const cardBorder = hasApproval
+      ? CORE_COLORS.amberBorder
+      : isRunning
+      ? CORE_COLORS.cyanBorder
+      : undefined;
+
+    const lastActiveStr = formatLastActive(item.lastActivity);
+
+    const cardContent = (
+      <TactilePressable
+        haptic
         onPress={() => router.push(`/(tabs)/chat/${item.id}` as any)}
+        accessibilityRole="button"
+        accessibilityLabel={`Open workspace ${item.name}`}
       >
-        <View style={styles.cardHeader}>
-          <View style={styles.cardHeaderLeft}>
-            <FolderGit2
-              size={18}
-              color={hasApproval ? "#F59E0B" : isRunning ? "#06B6D4" : "#10B981"}
-            />
-            <Text style={styles.projectName} numberOfLines={1}>
-              {item.name}
-            </Text>
+        <CoreCard
+          variant="subtle"
+          accentBorderColor={cardBorder}
+          style={styles.projectCard}
+        >
+          <View style={styles.cardTop}>
+            <View
+              style={[
+                styles.workspaceIconBox,
+                { backgroundColor: iconBg, borderColor: iconBorder },
+              ]}
+            >
+              <FolderGit2 size={19} color={iconTint} />
+            </View>
+
+            <View style={styles.workspaceMain}>
+              <Text style={styles.projectName} numberOfLines={1}>
+                {item.name}
+              </Text>
+              <Text style={styles.projectPath} numberOfLines={1}>
+                {item.path}
+              </Text>
+            </View>
+
+            <ChevronRight size={17} color={CORE_COLORS.textTertiary} />
           </View>
 
-          {/* Badges */}
-          <View style={styles.badgesRow}>
-            {hasApproval && (
-              <View style={[styles.badge, styles.badgeApproval]}>
-                <AlertTriangle size={10} color="#F59E0B" />
-                <Text style={styles.badgeApprovalText}>APPROVAL</Text>
-              </View>
-            )}
+          {(hasApproval || isRunning || isPcOpen) && (
+            <View style={styles.badgesRow}>
+              {hasApproval && (
+                <GlassBadge tone="orange">
+                  <AlertTriangle size={11} color={CORE_COLORS.amber} /> Approval
+                </GlassBadge>
+              )}
+              {isRunning && (
+                <GlassBadge tone="blue">
+                  <PlayCircle size={11} color={CORE_COLORS.cyan} /> Running
+                </GlassBadge>
+              )}
+              {isPcOpen && (
+                <GlassBadge tone="green">
+                  <Monitor size={11} color={CORE_COLORS.emerald} /> PC Open
+                </GlassBadge>
+              )}
+            </View>
+          )}
 
-            {isRunning && (
-              <View style={[styles.badge, styles.badgeRunning]}>
-                <PlayCircle size={10} color="#06B6D4" />
-                <Text style={styles.badgeRunningText}>RUNNING</Text>
-              </View>
-            )}
+          <View style={styles.cardFooter}>
+            <View style={styles.threadCountPill}>
+              <MessageSquare size={12} color={CORE_COLORS.textSecondary} />
+              <Text style={styles.sessionCount}>
+                {item.sessionCount} {item.sessionCount === 1 ? "thread" : "threads"}
+              </Text>
+            </View>
 
-            {item.openOnPc && (
-              <View style={[styles.badge, styles.badgePc]}>
-                <Monitor size={10} color="#10B981" />
-                <Text style={styles.badgePcText}>PC OPEN</Text>
-              </View>
-            )}
+            {lastActiveStr ? (
+              <Text style={styles.lastActivity}>{lastActiveStr}</Text>
+            ) : null}
           </View>
-        </View>
-
-        <Text style={styles.projectPath} numberOfLines={1}>
-          {item.path}
-        </Text>
-
-        <View style={styles.cardFooter}>
-          <Text style={styles.sessionCount}>
-            {item.sessionCount} {item.sessionCount === 1 ? "thread" : "threads"}
-          </Text>
-          {item.lastActivity ? (
-            <Text style={styles.lastActivity}>
-              Active: {new Date(item.lastActivity).toLocaleDateString()}
-            </Text>
-          ) : null}
-        </View>
-      </TouchableOpacity>
+        </CoreCard>
+      </TactilePressable>
     );
+
+    if (!hasAnimatedInitial.current && !searchQuery) {
+      return <AnimatedEntrance index={index}>{cardContent}</AnimatedEntrance>;
+    }
+    return cardContent;
   };
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <HeaderStatus title="ANTIGRAVITY // WORKSPACES" />
+      <HeaderStatus title="Antigravity" subtitle="Workspaces" />
 
-      {/* Subheader Toolbar */}
+      {/* Search & Refresh Toolbar */}
       <View style={styles.toolbar}>
-        <View style={styles.searchBar}>
-          <Search size={14} color="#64748B" />
+        <Animated.View
+          style={[
+            styles.searchShell,
+            {
+              borderColor: searchBorderColor,
+              backgroundColor: searchFocused
+                ? "rgba(255, 255, 255, 0.09)"
+                : "rgba(255, 255, 255, 0.055)",
+            },
+          ]}
+        >
+          <Search
+            size={16}
+            color={searchFocused ? CORE_COLORS.cyan : CORE_COLORS.textSecondary}
+          />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search projects by name or path..."
-            placeholderTextColor="#64748B"
+            placeholder="Search workspaces or paths..."
+            placeholderTextColor={CORE_COLORS.textTertiary}
             value={searchQuery}
             onChangeText={setSearchQuery}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
+            returnKeyType="search"
+            autoCapitalize="none"
+            autoCorrect={false}
           />
-        </View>
-        <TouchableOpacity
-          style={styles.refreshBtn}
+          {searchQuery.length > 0 && (
+            <Pressable
+              hitSlop={8}
+              onPress={() => setSearchQuery("")}
+              accessibilityLabel="Clear search"
+              style={styles.clearBtn}
+            >
+              <X size={14} color={CORE_COLORS.textSecondary} />
+            </Pressable>
+          )}
+        </Animated.View>
+
+        <TactilePressable
+          haptic
           onPress={onRefresh}
-          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel="Refresh workspaces"
         >
-          <RefreshCw size={14} color="#94A3B8" />
-        </TouchableOpacity>
+          <GlassSurface preset="control" elevation="base" style={styles.refreshBtn}>
+            <RefreshCw size={16} color={CORE_COLORS.textPrimary} />
+          </GlassSurface>
+        </TactilePressable>
       </View>
 
-      {/* Status banner */}
+      {/* Bridge Status Strip */}
       <View style={styles.statusStrip}>
         <View style={styles.statusLeft}>
           <View
             style={[
               styles.dot,
-              { backgroundColor: socketConnected ? "#10B981" : "#EF4444" },
+              {
+                backgroundColor: socketConnected
+                  ? CORE_COLORS.emeraldFill
+                  : CORE_COLORS.coral,
+              },
             ]}
           />
           <Text style={styles.statusText}>
-            BRIDGE {socketConnected ? "ONLINE" : "OFFLINE"} // {projects.length} WORKSPACES DISCOVERED
+            Bridge {socketConnected ? "Online" : "Offline"}
           </Text>
         </View>
+        <Text style={styles.countText}>
+          {filteredProjects.length}{" "}
+          {filteredProjects.length === 1 ? "workspace" : "workspaces"}
+        </Text>
       </View>
 
       {errorMsg ? (
-        <View style={styles.errorBox}>
-          <Text style={styles.errorText}>ERR: {errorMsg}</Text>
+        <View style={styles.errorWrap}>
+          <GlassAlert tone="danger" title="Workspace Sync Error">
+            {errorMsg}
+          </GlassAlert>
         </View>
       ) : null}
 
-      {loading && !refreshing ? (
-        <View style={styles.centerBox}>
-          <ActivityIndicator size="large" color="#06B6D4" />
-          <Text style={styles.loadingText}>Syncing Antigravity Workspaces...</Text>
+      {loading && !refreshing && projects.length === 0 ? (
+        <View style={styles.skeletonList}>
+          {[0, 1, 2, 3].map((k) => (
+            <CoreCard key={k} variant="subtle" style={styles.skeletonCard}>
+              <GlassSkeleton variant="text" lines={2} />
+            </CoreCard>
+          ))}
         </View>
       ) : (
         <FlatList
           data={filteredProjects}
           keyExtractor={(item) => item.id}
           renderItem={renderProjectItem}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[
+            styles.listContent,
+            {
+              paddingBottom:
+                Math.max(insets.bottom, 12) + CORE_SPACING.floatingDockOffset,
+            },
+          ]}
+          showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
               onRefresh={onRefresh}
-              tintColor="#06B6D4"
+              tintColor={CORE_COLORS.cyan}
+              colors={[CORE_COLORS.cyan]}
             />
           }
           ListEmptyComponent={
-            <View style={styles.emptyBox}>
-              <FolderOpen size={36} color="#334155" />
-              <Text style={styles.emptyTitle}>No Antigravity Projects Found</Text>
-              <Text style={styles.emptyDesc}>
-                Start a session in Antigravity on your PC or tap Refresh above.
+            <CoreCard variant="subtle" style={styles.emptyBox}>
+              <View style={styles.emptyIconWell}>
+                <FolderOpen size={28} color={CORE_COLORS.textSecondary} />
+              </View>
+              <Text style={styles.emptyTitle}>
+                {searchQuery ? "No Matching Workspaces" : "No Workspaces Discovered"}
               </Text>
-            </View>
+              <Text style={styles.emptyDesc}>
+                {searchQuery
+                  ? "Try clearing your filter or searching another folder name."
+                  : "Open a project in Antigravity on your PC or tap Refresh above."}
+              </Text>
+            </CoreCard>
           }
         />
       )}
@@ -231,52 +399,53 @@ export default function ProjectsListScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#121212",
+    backgroundColor: "transparent",
   },
   toolbar: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: "#181818",
-    borderBottomWidth: 1,
-    borderBottomColor: "#2A2A2A",
-    gap: 8,
+    paddingHorizontal: CORE_SPACING.screenX,
+    gap: 10,
+    marginBottom: 12,
   },
-  searchBar: {
+  searchShell: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#121212",
     borderWidth: 1,
-    borderColor: "#2A2A2A",
-    borderRadius: 3,
-    paddingHorizontal: 10,
-    height: 36,
-    gap: 8,
+    borderRadius: 15,
+    borderCurve: "continuous",
+    paddingHorizontal: 14,
+    minHeight: 46,
+    gap: 10,
   },
   searchInput: {
     flex: 1,
-    color: "#E2E8F0",
-    fontSize: 12,
-    fontFamily: "monospace",
+    color: CORE_COLORS.textPrimary,
+    fontSize: 15,
+    paddingVertical: Platform.OS === "ios" ? 10 : 8,
+  },
+  clearBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   refreshBtn: {
-    backgroundColor: "#121212",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    padding: 10,
-    borderRadius: 3,
+    width: 46,
+    height: 46,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
   },
   statusStrip: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    backgroundColor: "#141414",
-    borderBottomWidth: 1,
-    borderBottomColor: "#222222",
+    paddingHorizontal: CORE_SPACING.screenX + 2,
+    marginBottom: 12,
   },
   statusLeft: {
     flexDirection: "row",
@@ -284,163 +453,123 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
   },
   statusText: {
-    color: "#64748B",
-    fontSize: 9.5,
-    fontFamily: "monospace",
-    fontWeight: "700",
+    fontSize: 12,
+    fontWeight: "600",
+    color: CORE_COLORS.textSecondary,
   },
-  errorBox: {
-    backgroundColor: "#3A1212",
-    padding: 10,
-    margin: 10,
-    borderRadius: 3,
-    borderWidth: 1,
-    borderColor: "#EF4444",
+  countText: {
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textTertiary,
   },
-  errorText: {
-    color: "#FCA5A5",
-    fontSize: 11,
-    fontFamily: "monospace",
+  errorWrap: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    marginBottom: 10,
+  },
+  skeletonList: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    gap: 12,
+  },
+  skeletonCard: {
+    padding: 18,
   },
   listContent: {
-    padding: 14,
-    paddingBottom: 24,
-    gap: 10,
+    paddingHorizontal: CORE_SPACING.screenX,
+    gap: 12,
+    paddingTop: 2,
   },
   projectCard: {
-    backgroundColor: "#181818",
+    padding: 18,
+    gap: 12,
+  },
+  cardTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 13,
+  },
+  workspaceIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
     borderWidth: 1,
-    borderColor: "#2A2A2A",
-    borderRadius: 4,
-    padding: 12,
-    gap: 6,
-  },
-  cardApproval: {
-    borderColor: "#F59E0B",
-    backgroundColor: "#1C1813",
-  },
-  cardRunning: {
-    borderColor: "#06B6D4",
-    backgroundColor: "#12181C",
-  },
-  cardHeader: {
-    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "center",
   },
-  cardHeaderLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  workspaceMain: {
     flex: 1,
-    marginRight: 8,
+    minWidth: 0,
+    gap: 3,
   },
   projectName: {
-    color: "#F1F5F9",
-    fontSize: 14,
-    fontWeight: "800",
+    fontSize: 16,
+    fontWeight: "600",
+    letterSpacing: -0.2,
+    color: CORE_COLORS.textPrimary,
+  },
+  projectPath: {
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textSecondary,
   },
   badgesRow: {
     flexDirection: "row",
-    gap: 5,
-  },
-  badge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 2,
-  },
-  badgeApproval: {
-    backgroundColor: "#3B2506",
-    borderWidth: 1,
-    borderColor: "#F59E0B",
-  },
-  badgeApprovalText: {
-    color: "#F59E0B",
-    fontSize: 8.5,
-    fontFamily: "monospace",
-    fontWeight: "900",
-  },
-  badgeRunning: {
-    backgroundColor: "#082F49",
-    borderWidth: 1,
-    borderColor: "#06B6D4",
-  },
-  badgeRunningText: {
-    color: "#06B6D4",
-    fontSize: 8.5,
-    fontFamily: "monospace",
-    fontWeight: "900",
-  },
-  badgePc: {
-    backgroundColor: "#064E3B",
-    borderWidth: 1,
-    borderColor: "#10B981",
-  },
-  badgePcText: {
-    color: "#10B981",
-    fontSize: 8.5,
-    fontFamily: "monospace",
-    fontWeight: "900",
-  },
-  projectPath: {
-    color: "#64748B",
-    fontSize: 11,
-    fontFamily: "monospace",
+    flexWrap: "wrap",
+    gap: 7,
   },
   cardFooter: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginTop: 4,
-    paddingTop: 6,
-    borderTopWidth: 1,
-    borderTopColor: "#222222",
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: CORE_COLORS.borderSubtle,
+  },
+  threadCountPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
   sessionCount: {
-    color: "#94A3B8",
-    fontSize: 10.5,
-    fontFamily: "monospace",
+    fontSize: 13,
+    fontWeight: "500",
+    color: CORE_COLORS.textSecondary,
   },
   lastActivity: {
-    color: "#64748B",
-    fontSize: 10,
-    fontFamily: "monospace",
-  },
-  centerBox: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
-  },
-  loadingText: {
-    color: "#94A3B8",
-    fontSize: 12,
-    fontFamily: "monospace",
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textTertiary,
   },
   emptyBox: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 60,
+    paddingVertical: 44,
+    paddingHorizontal: 24,
+    marginTop: 12,
     gap: 10,
   },
+  emptyIconWell: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: CORE_COLORS.surfaceWell,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.borderSubtle,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
   emptyTitle: {
-    color: "#E2E8F0",
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 16,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
   },
   emptyDesc: {
-    color: "#64748B",
-    fontSize: 12,
+    fontSize: 13.5,
+    color: CORE_COLORS.textSecondary,
     textAlign: "center",
-    maxWidth: 260,
+    lineHeight: 20,
+    maxWidth: 270,
   },
 });
-

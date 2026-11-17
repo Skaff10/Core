@@ -7,11 +7,11 @@
     "orientation": "portrait",
     "scheme": "core",
     "userInterfaceStyle": "dark",
-    "backgroundColor": "#121212",
+    "backgroundColor": "#070A0F",
     "android": {
       "package": "com.core.commandcenter",
       "versionCode": 2,
-      "backgroundColor": "#121212",
+      "backgroundColor": "#070A0F",
       "permissions": [
         "INTERNET",
         "ACCESS_NETWORK_STATE",
@@ -48,7 +48,10 @@
           }
         }
       ],
-      "./plugins/withNetworkSecurityConfig.js"
+      "./plugins/withNetworkSecurityConfig.js",
+      "expo-sharing",
+      "expo-sqlite",
+      "expo-status-bar"
     ],
     "extra": {
       "router": {

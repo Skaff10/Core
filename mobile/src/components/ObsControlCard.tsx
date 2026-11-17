@@ -1,10 +1,11 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
-  TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Animated,
+  Platform,
 } from "react-native";
 import {
   Video,
@@ -13,17 +14,28 @@ import {
   Play,
   Square,
   MonitorPlay,
-  AlertTriangle,
+  FolderOutput,
 } from "lucide-react-native";
 import { useConnectionStore } from "../store/useConnectionStore";
 import { CoreApiClient } from "../services/api";
+import { useGlassTheme } from "./glassyui/glass-provider";
+import { GlassBadge, type GlassBadgeTone } from "./glassyui/glass-badge";
+import { GlassAlert } from "./glassyui/glass-alert";
+import { CoreCard } from "./ui/CoreCard";
+import { TactilePressable } from "./ui/TactilePressable";
+import { CORE_COLORS, CORE_RADIUS } from "../theme/tokens";
+import { CORE_TYPOGRAPHY } from "../theme/typography";
 
 type BusyAction = "open" | "record" | "pause" | "stop" | null;
 
 export const ObsControlCard: React.FC = () => {
   const { pcIp, pcPort, authToken, obsStatus, setObsStatus } = useConnectionStore();
+  const { preferences } = useGlassTheme();
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const recPulse = useRef(new Animated.Value(1)).current;
+  const nativeDriver = Platform.OS !== "web";
 
   const state = obsStatus?.state || "offline";
   const isRunning = Boolean(obsStatus?.running);
@@ -31,58 +43,52 @@ export const ObsControlCard: React.FC = () => {
   const isPaused = Boolean(obsStatus?.paused);
   const wsConnected = Boolean(obsStatus?.ws_connected);
 
-  const getBadgeConfig = () => {
+  useEffect(() => {
+    if (!(isRecording && !isPaused) || preferences.reduceMotion) {
+      recPulse.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(recPulse, {
+          toValue: 0.35,
+          duration: 850,
+          useNativeDriver: nativeDriver,
+        }),
+        Animated.timing(recPulse, {
+          toValue: 1,
+          duration: 850,
+          useNativeDriver: nativeDriver,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [isPaused, isRecording, nativeDriver, preferences.reduceMotion, recPulse]);
+
+  const getBadgeConfig = (): { label: string; tone: GlassBadgeTone } => {
     switch (state) {
       case "recording":
         return {
           label: `REC ${obsStatus?.duration_text || "00:00"}`,
-          color: "#EF4444",
-          bg: "rgba(239, 68, 68, 0.14)",
-          border: "#EF4444",
+          tone: "red",
         };
       case "paused":
         return {
-          label: `PAUSED ${obsStatus?.duration_text || "00:00"}`,
-          color: "#F59E0B",
-          bg: "rgba(245, 158, 11, 0.14)",
-          border: "#F59E0B",
+          label: `Paused ${obsStatus?.duration_text || "00:00"}`,
+          tone: "orange",
         };
       case "standby":
-        return {
-          label: "STANDBY",
-          color: "#10B981",
-          bg: "rgba(16, 185, 129, 0.12)",
-          border: "#10B981",
-        };
+        return { label: "Standby", tone: "green" };
       case "ws_disabled":
-        return {
-          label: "WS DISABLED",
-          color: "#F59E0B",
-          bg: "rgba(245, 158, 11, 0.14)",
-          border: "#F59E0B",
-        };
+        return { label: "WS Disabled", tone: "orange" };
       case "auth_failed":
-        return {
-          label: "WS AUTH ERR",
-          color: "#EF4444",
-          bg: "rgba(239, 68, 68, 0.14)",
-          border: "#EF4444",
-        };
+        return { label: "WS Auth Error", tone: "red" };
       case "connecting":
-        return {
-          label: "CONNECTING",
-          color: "#06B6D4",
-          bg: "rgba(6, 182, 212, 0.12)",
-          border: "#06B6D4",
-        };
+        return { label: "Connecting", tone: "blue" };
       case "offline":
       default:
-        return {
-          label: "OBS OFFLINE",
-          color: "#64748B",
-          bg: "#121212",
-          border: "#2A2A2A",
-        };
+        return { label: "Offline", tone: "neutral" };
     }
   };
 
@@ -100,10 +106,10 @@ export const ObsControlCard: React.FC = () => {
       const nextStatus = await fn();
       setObsStatus(nextStatus);
       if (successMsg) {
-        setFeedback(successMsg);
+        setFeedback({ ok: true, text: successMsg });
       }
     } catch (err: any) {
-      setFeedback(`ERR // ${err?.message || "OBS request failed"}`);
+      setFeedback({ ok: false, text: err?.message || "OBS request failed" });
     } finally {
       setBusyAction(null);
     }
@@ -113,7 +119,7 @@ export const ObsControlCard: React.FC = () => {
     runAction(
       "open",
       () => CoreApiClient.openObs(pcIp, pcPort, authToken, false),
-      isRunning ? "OBS STATUS REFRESHED" : "OBS STUDIO LAUNCHED ON PC"
+      isRunning ? "OBS status refreshed" : "OBS Studio launched on PC"
     );
   };
 
@@ -122,14 +128,14 @@ export const ObsControlCard: React.FC = () => {
       runAction(
         "record",
         () => CoreApiClient.resumeObsRecording(pcIp, pcPort, authToken),
-        "RECORDING RESUMED"
+        "Recording resumed"
       );
       return;
     }
     runAction(
       "record",
       () => CoreApiClient.startObsRecording(pcIp, pcPort, authToken),
-      isRunning ? "RECORDING STARTED" : "LAUNCHED OBS & STARTED RECORDING"
+      isRunning ? "Recording started" : "Launched OBS & started recording"
     );
   };
 
@@ -137,7 +143,7 @@ export const ObsControlCard: React.FC = () => {
     runAction(
       "pause",
       () => CoreApiClient.pauseObsRecording(pcIp, pcPort, authToken),
-      "RECORDING PAUSED"
+      "Recording paused"
     );
   };
 
@@ -145,7 +151,7 @@ export const ObsControlCard: React.FC = () => {
     runAction(
       "stop",
       () => CoreApiClient.stopObsRecording(pcIp, pcPort, authToken),
-      "RECORDING STOPPED & SAVED"
+      "Recording stopped & saved"
     );
   };
 
@@ -162,311 +168,342 @@ export const ObsControlCard: React.FC = () => {
     (isRunning && !wsConnected && state === "ws_disabled");
 
   return (
-    <View style={styles.card}>
-      <View style={styles.header}>
-        <View style={styles.titleRow}>
-          <Video size={14} color="#06B6D4" />
-          <Text style={styles.headerTitle}>OBS STUDIO // RECORDER</Text>
+    <CoreCard
+      variant="panel"
+      elevation="base"
+      accentBorderColor={
+        isRecording && !isPaused
+          ? CORE_COLORS.coralBorder
+          : isPaused
+          ? CORE_COLORS.amberBorder
+          : undefined
+      }
+    >
+      {/* Header */}
+      <View style={styles.headerRow}>
+        <View style={styles.titleGroup}>
+          <View
+            style={[
+              styles.iconWell,
+              isRecording && !isPaused && styles.iconWellRec,
+            ]}
+          >
+            <Video
+              size={15}
+              color={isRecording && !isPaused ? CORE_COLORS.coral : CORE_COLORS.cyan}
+            />
+          </View>
+          <View>
+            <Text style={styles.eyebrow}>OBS Studio</Text>
+            <Text style={styles.subTitle}>Capture & Recorder</Text>
+          </View>
         </View>
 
-        <View
-          style={[
-            styles.statusPill,
-            { backgroundColor: badge.bg, borderColor: badge.border },
-          ]}
-        >
-          <View style={[styles.dot, { backgroundColor: badge.color }]} />
-          <Text style={[styles.statusText, { color: badge.color }]}>
+        <View style={styles.badgeWrap}>
+          {isRecording && !isPaused && (
+            <Animated.View
+              style={[styles.liveRecDot, { opacity: recPulse }]}
+            />
+          )}
+          <GlassBadge dot={!(isRecording && !isPaused)} tone={badge.tone}>
             {badge.label}
-          </Text>
+          </GlassBadge>
         </View>
       </View>
 
-      <View style={styles.body}>
-        {/* Diagnostic / Live Telemetry Line */}
-        {state === "ws_disabled" ? (
-          <View style={styles.warnBox}>
-            <AlertTriangle size={13} color="#F59E0B" />
-            <Text style={styles.warnText}>
-              OBS is running without WebSocket enabled. Enable Tools → WebSocket
-              Server Settings in OBS (or close OBS &amp; tap Open OBS).
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.metaRow}>
-            <Text style={styles.metaText} numberOfLines={1}>
-              {isRecording
-                ? isPaused
-                  ? `Paused at ${obsStatus?.duration_text || "00:00"}${mbWritten ? ` • ${mbWritten}` : ""}`
-                  : `Recording live • ${obsStatus?.duration_text || "00:00"}${mbWritten ? ` • ${mbWritten}` : ""}`
-                : isRunning
-                ? `OBS running (PID ${obsStatus?.pid || "---"}) • Ready to record`
-                : obsStatus?.installed === false
-                ? "OBS executable not found on PC"
-                : "OBS closed • Tap Open OBS or Record to start"}
-            </Text>
-          </View>
-        )}
-
-        {obsStatus?.last_output_path ? (
-          <Text style={styles.savedPath} numberOfLines={1}>
-            LAST FILE: {obsStatus.last_output_path}
+      {/* Status Well / Warning */}
+      {state === "ws_disabled" ? (
+        <GlassAlert tone="warning" title="WebSocket Disabled" style={styles.alertBox}>
+          Enable Tools → WebSocket Server Settings in OBS, or close OBS and tap Open OBS.
+        </GlassAlert>
+      ) : (
+        <View style={styles.statusWell}>
+          <Text style={styles.statusText} numberOfLines={2}>
+            {isRecording
+              ? isPaused
+                ? `Paused at ${obsStatus?.duration_text || "00:00"}${mbWritten ? ` · ${mbWritten}` : ""}`
+                : `Recording live · ${obsStatus?.duration_text || "00:00"}${mbWritten ? ` · ${mbWritten}` : ""}`
+              : isRunning
+              ? `OBS running (PID ${obsStatus?.pid || "---"}) · Ready to record`
+              : obsStatus?.installed === false
+              ? "OBS executable not found on PC"
+              : "OBS is closed · Tap Open OBS or Record to begin"}
           </Text>
-        ) : null}
+        </View>
+      )}
 
-        {(feedback || obsStatus?.error) && state !== "ws_disabled" ? (
-          <Text
-            style={[
-              styles.feedbackText,
-              (feedback?.startsWith("ERR") || obsStatus?.error) && {
-                color: "#FCA5A5",
-              },
-            ]}
-            numberOfLines={2}
-          >
-            {feedback || obsStatus?.error}
+      {obsStatus?.last_output_path ? (
+        <View style={styles.outputRow}>
+          <FolderOutput size={13} color={CORE_COLORS.emerald} />
+          <Text style={styles.outputPath} numberOfLines={1}>
+            {obsStatus.last_output_path}
           </Text>
-        ) : null}
+        </View>
+      ) : null}
 
-        {/* 4 Tactile OBS Control Buttons */}
-        <View style={styles.controlsGrid}>
-          {/* OPEN OBS */}
-          <TouchableOpacity
-            style={[
-              styles.btn,
-              styles.openBtn,
-              isRunning && styles.openBtnActive,
-            ]}
-            activeOpacity={0.8}
+      {(feedback || obsStatus?.error) && state !== "ws_disabled" ? (
+        <Text
+          style={[
+            styles.feedbackText,
+            {
+              color:
+                feedback?.ok === false || obsStatus?.error
+                  ? CORE_COLORS.coral
+                  : CORE_COLORS.cyan,
+            },
+          ]}
+          numberOfLines={2}
+        >
+          {feedback?.text || obsStatus?.error}
+        </Text>
+      ) : null}
+
+      {/* 2x2 Tactile Controls */}
+      <View style={styles.controlsGrid}>
+        {/* OPEN OBS */}
+        <View style={styles.btnSlot}>
+          <TactilePressable
+            haptic
             disabled={Boolean(busyAction)}
             onPress={handleOpenObs}
+            accessibilityRole="button"
+            accessibilityLabel={isRunning ? "OBS Open" : "Open OBS"}
+            style={[
+              styles.controlBtn,
+              isRunning ? styles.btnEmerald : styles.btnNeutral,
+            ]}
           >
             {busyAction === "open" ? (
-              <ActivityIndicator size="small" color="#06B6D4" />
+              <ActivityIndicator size="small" color={CORE_COLORS.cyan} />
             ) : (
-              <MonitorPlay size={14} color={isRunning ? "#10B981" : "#06B6D4"} />
+              <MonitorPlay
+                size={16}
+                color={isRunning ? CORE_COLORS.emerald : CORE_COLORS.cyan}
+              />
             )}
             <Text
               style={[
-                styles.btnText,
-                { color: isRunning ? "#10B981" : "#E2E8F0" },
+                styles.controlLabel,
+                { color: isRunning ? CORE_COLORS.emerald : CORE_COLORS.textPrimary },
               ]}
             >
-              {isRunning ? "OBS OPEN" : "OPEN OBS"}
+              {isRunning ? "OBS Open" : "Open OBS"}
             </Text>
-          </TouchableOpacity>
+          </TactilePressable>
+        </View>
 
-          {/* RECORD / RESUME */}
-          <TouchableOpacity
-            style={[
-              styles.btn,
-              isPaused ? styles.resumeBtn : styles.recBtn,
-              recordDisabled && styles.btnDisabled,
-            ]}
-            activeOpacity={0.8}
+        {/* RECORD / RESUME */}
+        <View style={styles.btnSlot}>
+          <TactilePressable
+            haptic
             disabled={recordDisabled}
             onPress={handleRecordOrResume}
+            accessibilityRole="button"
+            accessibilityLabel={isPaused ? "Resume recording" : "Start recording"}
+            style={[
+              styles.controlBtn,
+              isPaused ? styles.btnResume : styles.btnRecord,
+            ]}
           >
             {busyAction === "record" ? (
-              <ActivityIndicator size="small" color="#FFF" />
+              <ActivityIndicator
+                size="small"
+                color={isPaused ? CORE_COLORS.textInverse : "#FFFFFF"}
+              />
             ) : isPaused ? (
-              <Play size={14} color="#090D16" fill="#090D16" />
+              <Play size={15} color={CORE_COLORS.textInverse} fill={CORE_COLORS.textInverse} />
             ) : (
-              <Circle size={13} color="#FFF" fill="#EF4444" />
+              <Circle size={13} color="#FFFFFF" fill={CORE_COLORS.coralFill} />
             )}
             <Text
               style={[
-                styles.btnText,
-                isPaused ? { color: "#090D16" } : { color: "#FCA5A5" },
+                styles.controlLabel,
+                isPaused
+                  ? { color: CORE_COLORS.textInverse, fontWeight: "700" }
+                  : { color: "#FFE4E6" },
               ]}
             >
-              {isPaused ? "RESUME" : isRecording ? "REC LIVE" : "RECORD"}
+              {isPaused ? "Resume" : isRecording ? "Rec Live" : "Record"}
             </Text>
-          </TouchableOpacity>
+          </TactilePressable>
+        </View>
 
-          {/* PAUSE */}
-          <TouchableOpacity
-            style={[
-              styles.btn,
-              styles.pauseBtn,
-              (!canPause || Boolean(busyAction)) && styles.btnDisabled,
-            ]}
-            activeOpacity={0.8}
+        {/* PAUSE */}
+        <View style={styles.btnSlot}>
+          <TactilePressable
+            haptic
             disabled={!canPause || Boolean(busyAction)}
             onPress={handlePause}
+            accessibilityRole="button"
+            accessibilityLabel="Pause recording"
+            style={[styles.controlBtn, styles.btnPause]}
           >
             {busyAction === "pause" ? (
-              <ActivityIndicator size="small" color="#F59E0B" />
+              <ActivityIndicator size="small" color={CORE_COLORS.amber} />
             ) : (
-              <Pause size={14} color="#F59E0B" />
+              <Pause size={15} color={CORE_COLORS.amber} />
             )}
-            <Text style={[styles.btnText, { color: "#F59E0B" }]}>PAUSE</Text>
-          </TouchableOpacity>
+            <Text style={[styles.controlLabel, { color: CORE_COLORS.amber }]}>
+              Pause
+            </Text>
+          </TactilePressable>
+        </View>
 
-          {/* STOP */}
-          <TouchableOpacity
-            style={[
-              styles.btn,
-              styles.stopBtn,
-              (!canStop || Boolean(busyAction)) && styles.btnDisabled,
-            ]}
-            activeOpacity={0.8}
+        {/* STOP */}
+        <View style={styles.btnSlot}>
+          <TactilePressable
+            haptic
             disabled={!canStop || Boolean(busyAction)}
             onPress={handleStop}
+            accessibilityRole="button"
+            accessibilityLabel="Stop recording"
+            style={[styles.controlBtn, styles.btnStop]}
           >
             {busyAction === "stop" ? (
-              <ActivityIndicator size="small" color="#EF4444" />
+              <ActivityIndicator size="small" color={CORE_COLORS.coral} />
             ) : (
-              <Square size={13} color="#EF4444" fill="#EF4444" />
+              <Square size={14} color={CORE_COLORS.coral} fill={CORE_COLORS.coral} />
             )}
-            <Text style={[styles.btnText, { color: "#EF4444" }]}>STOP</Text>
-          </TouchableOpacity>
+            <Text style={[styles.controlLabel, { color: CORE_COLORS.coral }]}>
+              Stop
+            </Text>
+          </TactilePressable>
         </View>
       </View>
-    </View>
+    </CoreCard>
   );
 };
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: "#1E1E1E",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    borderRadius: 2,
-    marginBottom: 16,
-  },
-  header: {
-    backgroundColor: "#181818",
-    borderBottomWidth: 1,
-    borderBottomColor: "#2A2A2A",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+  headerRow: {
     flexDirection: "row",
+    alignItems: "center",
     justifyContent: "space-between",
-    alignItems: "center",
+    marginBottom: 14,
   },
-  titleRow: {
+  titleGroup: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 10,
   },
-  headerTitle: {
-    color: "#E2E8F0",
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.9,
+  iconWell: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: CORE_COLORS.cyanSoft,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.cyanBorder,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  statusPill: {
+  iconWellRec: {
+    backgroundColor: CORE_COLORS.coralSoft,
+    borderColor: CORE_COLORS.coralBorder,
+  },
+  eyebrow: {
+    ...CORE_TYPOGRAPHY.eyebrow,
+    color: CORE_COLORS.textSecondary,
+  },
+  subTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
+    marginTop: 1,
+  },
+  badgeWrap: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 2,
-    borderWidth: 1,
   },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+  liveRecDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#EF4444",
+  },
+  alertBox: {
+    marginBottom: 12,
+  },
+  statusWell: {
+    backgroundColor: CORE_COLORS.surfaceWell,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.borderSubtle,
+    borderRadius: CORE_RADIUS.md,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 10,
   },
   statusText: {
-    fontSize: 9.5,
-    fontFamily: "monospace",
-    fontWeight: "900",
+    ...CORE_TYPOGRAPHY.mono,
+    color: CORE_COLORS.textSecondary,
+    lineHeight: 18,
   },
-  body: {
-    padding: 12,
-    gap: 10,
-  },
-  metaRow: {
-    backgroundColor: "#141414",
-    borderWidth: 1,
-    borderColor: "#262626",
-    borderRadius: 2,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  metaText: {
-    color: "#94A3B8",
-    fontSize: 11,
-    fontFamily: "monospace",
-  },
-  warnBox: {
+  outputRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    backgroundColor: "#2B1E08",
-    borderWidth: 1,
-    borderColor: "#F59E0B",
-    borderRadius: 2,
-    padding: 8,
+    gap: 7,
+    paddingHorizontal: 4,
+    marginBottom: 10,
   },
-  warnText: {
+  outputPath: {
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.emerald,
     flex: 1,
-    color: "#FDE68A",
-    fontSize: 10.5,
-    fontFamily: "monospace",
-    lineHeight: 15,
-  },
-  savedPath: {
-    color: "#10B981",
-    fontSize: 10,
-    fontFamily: "monospace",
   },
   feedbackText: {
-    color: "#06B6D4",
-    fontSize: 10.5,
-    fontFamily: "monospace",
-    fontWeight: "700",
+    fontSize: 13,
+    fontWeight: "500",
+    marginBottom: 10,
+    paddingHorizontal: 2,
   },
   controlsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
-    rowGap: 8,
+    rowGap: 10,
+    marginTop: 4,
   },
-  btn: {
-    width: "48.6%",
+  btnSlot: {
+    width: "48.4%",
+  },
+  controlBtn: {
+    minHeight: 48,
+    borderRadius: CORE_RADIUS.md,
+    borderCurve: "continuous",
+    borderWidth: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 7,
-    paddingVertical: 11,
-    borderRadius: 2,
-    borderWidth: 1,
+    gap: 8,
+    paddingHorizontal: 12,
   },
-  openBtn: {
-    backgroundColor: "#141414",
-    borderColor: "#334155",
+  btnNeutral: {
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderColor: CORE_COLORS.borderDefault,
   },
-  openBtnActive: {
-    backgroundColor: "#0D1E19",
-    borderColor: "#10B981",
+  btnEmerald: {
+    backgroundColor: CORE_COLORS.emeraldSoft,
+    borderColor: CORE_COLORS.emeraldBorder,
   },
-  recBtn: {
-    backgroundColor: "#2D1214",
-    borderColor: "#EF4444",
+  btnRecord: {
+    backgroundColor: "rgba(225, 29, 72, 0.20)",
+    borderColor: "rgba(251, 113, 133, 0.45)",
   },
-  resumeBtn: {
-    backgroundColor: "#10B981",
-    borderColor: "#10B981",
+  btnResume: {
+    backgroundColor: CORE_COLORS.emeraldFill,
+    borderColor: CORE_COLORS.emeraldFill,
   },
-  pauseBtn: {
-    backgroundColor: "#261B0A",
-    borderColor: "#F59E0B",
+  btnPause: {
+    backgroundColor: CORE_COLORS.amberSoft,
+    borderColor: CORE_COLORS.amberBorder,
   },
-  stopBtn: {
-    backgroundColor: "#231212",
-    borderColor: "#991B1B",
+  btnStop: {
+    backgroundColor: CORE_COLORS.coralSoft,
+    borderColor: CORE_COLORS.coralBorder,
   },
-  btnDisabled: {
-    opacity: 0.38,
-  },
-  btnText: {
-    fontSize: 11,
-    fontFamily: "monospace",
-    fontWeight: "900",
-    letterSpacing: 0.6,
+  controlLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    letterSpacing: -0.1,
   },
 });

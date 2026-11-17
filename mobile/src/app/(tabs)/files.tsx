@@ -2,16 +2,15 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
-  TouchableOpacity,
   FlatList,
   StyleSheet,
-  Modal,
   Image,
-  ActivityIndicator,
   Linking,
   Platform,
+  ScrollView,
+  RefreshControl,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { File, Directory, Paths } from "expo-file-system";
 import { Asset } from "expo-media-library";
 import * as Sharing from "expo-sharing";
@@ -20,12 +19,13 @@ import {
   HardDrive,
   ArrowUpLeft,
   RefreshCw,
-  X,
   Download,
   ExternalLink,
   Upload,
-  Folder,
+  FolderPlus,
   Camera,
+  ChevronRight,
+  FolderOpen,
 } from "lucide-react-native";
 import { HeaderStatus } from "../../components/HeaderStatus";
 import { FileRow } from "../../components/FileRow";
@@ -36,26 +36,63 @@ import {
   RemoteFileEntry,
 } from "../../services/api";
 import { pickAndSendToPcVault } from "../../services/syncTask";
+import { CoreCard } from "../../components/ui/CoreCard";
+import { TactilePressable } from "../../components/ui/TactilePressable";
+import { GlassSurface } from "../../components/glassyui/glass-surface";
+import { GlassButton } from "../../components/glassyui/glass-button";
+import { GlassBadge } from "../../components/glassyui/glass-badge";
+import { GlassAlert } from "../../components/glassyui/glass-alert";
+import { GlassProgress } from "../../components/glassyui/glass-progress";
+import { GlassSkeleton } from "../../components/glassyui/glass-skeleton";
+import {
+  GlassSheet,
+  GlassSheetContent,
+  GlassSheetDescription,
+  GlassSheetTitle,
+} from "../../components/glassyui/glass-sheet";
+import { CORE_COLORS, CORE_RADIUS, CORE_SPACING } from "../../theme/tokens";
+import { CORE_TYPOGRAPHY } from "../../theme/typography";
 
 const ANDROID_SAVE_DIR_KEY = "@core/android_download_dir_uri";
 
+interface UploadProgressState {
+  statusText: string;
+  percent: number | null;
+  targetLabel: string;
+}
+
+function parseProgressFromStatus(msg: string): {
+  label: string;
+  percent: number | null;
+} {
+  const pctMatch = msg.match(/\((\d+)%\)/);
+  const percent = pctMatch ? Math.min(100, Math.max(0, Number(pctMatch[1]))) : null;
+  const cleanLabel = msg.replace(/\s*\(\d+%\)/, "").trim();
+  return { label: cleanLabel, percent };
+}
+
 export default function FilesScreen() {
+  const insets = useSafeAreaInsets();
   const { pcIp, pcPort, authToken } = useConnectionStore();
   const [roots, setRoots] = useState<WhitelistedRoot[]>([]);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [entries, setEntries] = useState<RemoteFileEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Mobile -> PC Upload State
+  // Mobile -> PC Upload State (driven exclusively by real callbacks)
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(
+    null
+  );
   const [uploadBanner, setUploadBanner] = useState<{
     ok: boolean;
     text: string;
   } | null>(null);
 
-  // Preview / Download Modal State
+  // Preview / Download Sheet State
   const [selectedFile, setSelectedFile] = useState<RemoteFileEntry | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState<{
@@ -74,7 +111,11 @@ export default function FilesScreen() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const list = await CoreApiClient.fetchWhitelistedRoots(pcIp, pcPort, authToken);
+      const list = await CoreApiClient.fetchWhitelistedRoots(
+        pcIp,
+        pcPort,
+        authToken
+      );
       setRoots(list);
       setCurrentPath(null);
       setParentPath(null);
@@ -113,6 +154,16 @@ export default function FilesScreen() {
     loadRoots();
   }, [loadRoots]);
 
+  const onRefresh = async () => {
+    setRefreshing(true);
+    if (currentPath) {
+      await openDirectory(currentPath);
+    } else {
+      await loadRoots();
+    }
+    setRefreshing(false);
+  };
+
   const handlePressEntry = (item: RemoteFileEntry) => {
     if (item.is_dir) {
       openDirectory(item.path);
@@ -124,32 +175,45 @@ export default function FilesScreen() {
 
   // --- MOBILE -> PC UPLOAD HANDLERS ---
   const handleUploadFromPhone = async (targetDir?: string) => {
+    const destLabel = targetDir || "F:\\From_phone";
     setUploading(true);
-    setUploadBanner({ ok: true, text: "OPENING FILE PICKER..." });
+    setUploadBanner(null);
+    setUploadProgress({
+      statusText: "Opening file picker...",
+      percent: null,
+      targetLabel: destLabel,
+    });
     try {
       const summary = await pickAndSendToPcVault(pcIp, pcPort, authToken, {
         mediaOnly: false,
         useLedger: false,
         targetDir,
-        onProgress: (msg) => setUploadBanner({ ok: true, text: msg }),
+        onProgress: (msg) => {
+          const parsed = parseProgressFromStatus(msg);
+          setUploadProgress({
+            statusText: parsed.label,
+            percent: parsed.percent,
+            targetLabel: destLabel,
+          });
+        },
       });
 
       if (summary.canceled) {
         setUploadBanner(null);
+        setUploadProgress(null);
         return;
       }
 
       if (summary.failed > 0 && summary.uploaded === 0) {
         setUploadBanner({
           ok: false,
-          text: `UPLOAD FAILED // ${summary.lastError || "Unable to send file"}`,
+          text: `Upload failed: ${summary.lastError || "Unable to send file"}`,
         });
       } else {
-        const destLabel = targetDir || "F:\\From_phone (Photos/Videos/Files)";
         setUploadBanner({
           ok: summary.failed === 0,
-          text: `SENT ${summary.uploaded} FILE(S) TO PC -> ${destLabel}${
-            summary.failed > 0 ? ` (${summary.failed} FAILED)` : ""
+          text: `Sent ${summary.uploaded} file(s) to ${destLabel}${
+            summary.failed > 0 ? ` (${summary.failed} failed)` : ""
           }`,
         });
         if (currentPath) {
@@ -159,10 +223,11 @@ export default function FilesScreen() {
     } catch (err: any) {
       setUploadBanner({
         ok: false,
-        text: `UPLOAD ERR // ${err?.message || "Failed sending to PC"}`,
+        text: err?.message || "Failed sending to PC",
       });
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -201,12 +266,12 @@ export default function FilesScreen() {
       a.href = remoteUrl;
       a.download = file.name;
       a.click();
-      setDownloadStatus({ ok: true, text: `BROWSER DOWNLOAD STARTED // ${file.name}` });
+      setDownloadStatus({ ok: true, text: `Browser download started: ${file.name}` });
       return;
     }
 
     setDownloading(true);
-    setDownloadStatus({ ok: true, text: "DOWNLOADING FROM PC..." });
+    setDownloadStatus({ ok: true, text: "Downloading from PC..." });
     try {
       const localFile = await fetchPcFileToCache(file);
 
@@ -214,7 +279,7 @@ export default function FilesScreen() {
       if (!dirUri) {
         setDownloadStatus({
           ok: true,
-          text: "SELECT A DESTINATION FOLDER ON YOUR PHONE (E.G. DOWNLOADS)...",
+          text: "Select a destination folder on your phone (e.g. Downloads)...",
         });
         const pickedDir = await Directory.pickDirectoryAsync();
         dirUri = pickedDir.uri;
@@ -226,7 +291,6 @@ export default function FilesScreen() {
         const destDir = new Directory(dirUri);
         await localFile.copy(destDir, { overwrite: true });
       } catch {
-        // Saved SAF folder permission expired or folder moved — re-prompt once
         const pickedDir = await Directory.pickDirectoryAsync();
         dirUri = pickedDir.uri;
         await AsyncStorage.setItem(ANDROID_SAVE_DIR_KEY, dirUri);
@@ -236,14 +300,14 @@ export default function FilesScreen() {
 
       setDownloadStatus({
         ok: true,
-        text: `SAVED TO PHONE FOLDER // ${file.name}`,
+        text: `Saved to phone folder: ${file.name}`,
       });
     } catch (err: any) {
       const msg = String(err?.message || "Save failed");
       if (msg.toLowerCase().includes("cancel")) {
-        setDownloadStatus({ ok: false, text: "FOLDER SELECTION CANCELED" });
+        setDownloadStatus({ ok: false, text: "Folder selection canceled" });
       } else {
-        setDownloadStatus({ ok: false, text: `SAVE FAILED // ${msg}` });
+        setDownloadStatus({ ok: false, text: `Save failed: ${msg}` });
       }
     } finally {
       setDownloading(false);
@@ -252,18 +316,18 @@ export default function FilesScreen() {
 
   const handleSaveMediaToGallery = async (file: RemoteFileEntry) => {
     setDownloading(true);
-    setDownloadStatus({ ok: true, text: "DOWNLOADING TO PHONE GALLERY..." });
+    setDownloadStatus({ ok: true, text: "Saving to phone gallery..." });
     try {
       const localFile = await fetchPcFileToCache(file);
       await Asset.create(localFile.uri);
       setDownloadStatus({
         ok: true,
-        text: `SAVED TO ANDROID GALLERY // ${file.name}`,
+        text: `Saved to gallery: ${file.name}`,
       });
     } catch (err: any) {
       setDownloadStatus({
         ok: false,
-        text: `GALLERY SAVE FAILED // ${err?.message || "Error"}`,
+        text: `Gallery save failed: ${err?.message || "Error"}`,
       });
     } finally {
       setDownloading(false);
@@ -276,20 +340,20 @@ export default function FilesScreen() {
       return;
     }
     setDownloading(true);
-    setDownloadStatus({ ok: true, text: "PREPARING FILE FOR SHARE / OPEN..." });
+    setDownloadStatus({ ok: true, text: "Preparing file for share / open..." });
     try {
       const localFile = await fetchPcFileToCache(file);
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
         await Sharing.shareAsync(localFile.uri);
-        setDownloadStatus({ ok: true, text: `SHARED // ${file.name}` });
+        setDownloadStatus({ ok: true, text: `Shared ${file.name}` });
       } else {
         handleStreamExternal(file);
       }
     } catch (err: any) {
       setDownloadStatus({
         ok: false,
-        text: `SHARE FAILED // ${err?.message || "Error"}`,
+        text: `Share failed: ${err?.message || "Error"}`,
       });
     } finally {
       setDownloading(false);
@@ -311,260 +375,395 @@ export default function FilesScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <HeaderStatus title="REMOTE FILE EXPLORER" />
+      <HeaderStatus title="Remote Files" subtitle="Explorer & Transfer" />
 
-      {/* BREADCRUMB NAVIGATION BAR */}
-      <View style={styles.breadcrumbBar}>
-        <TouchableOpacity style={styles.rootPill} onPress={loadRoots}>
-          <HardDrive size={13} color="#06B6D4" />
-          <Text style={styles.rootPillText}>ROOTS</Text>
-        </TouchableOpacity>
-
-        {currentPath && (
-          <TouchableOpacity
-            style={styles.upPill}
-            onPress={() => (parentPath ? openDirectory(parentPath) : loadRoots())}
+      {/* Glass Navigation & Path Bar */}
+      <View style={styles.controlsSection}>
+        <GlassSurface preset="control" elevation="base" style={styles.navBar}>
+          <TactilePressable
+            haptic
+            onPress={loadRoots}
+            accessibilityRole="button"
+            accessibilityLabel="View whitelisted volumes"
+            style={[styles.navChip, !currentPath && styles.navChipActive]}
           >
-            <ArrowUpLeft size={13} color="#E2E8F0" />
-            <Text style={styles.upPillText}>UP</Text>
-          </TouchableOpacity>
+            <HardDrive
+              size={14}
+              color={!currentPath ? CORE_COLORS.cyan : CORE_COLORS.textSecondary}
+            />
+            <Text
+              style={[
+                styles.navChipText,
+                !currentPath && { color: CORE_COLORS.cyan },
+              ]}
+            >
+              Volumes
+            </Text>
+          </TactilePressable>
+
+          {currentPath && (
+            <TactilePressable
+              haptic
+              onPress={() =>
+                parentPath ? openDirectory(parentPath) : loadRoots()
+              }
+              accessibilityRole="button"
+              accessibilityLabel="Navigate up"
+              style={styles.navChip}
+            >
+              <ArrowUpLeft size={14} color={CORE_COLORS.textPrimary} />
+              <Text style={styles.navChipText}>Up</Text>
+            </TactilePressable>
+          )}
+
+          <Text style={styles.pathText} numberOfLines={1}>
+            {currentPath || "Select a PC volume"}
+          </Text>
+
+          <TactilePressable
+            haptic
+            onPress={() => (currentPath ? openDirectory(currentPath) : loadRoots())}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh directory"
+            style={styles.refreshIconBtn}
+          >
+            <RefreshCw size={15} color={CORE_COLORS.textSecondary} />
+          </TactilePressable>
+        </GlassSurface>
+
+        {/* Quick Horizontal Volume Switcher when browsing inside a path */}
+        {currentPath && roots.length > 0 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.quickRootsRow}
+          >
+            {roots.map((r) => {
+              const active = currentPath.toLowerCase().startsWith(r.path.toLowerCase());
+              return (
+                <TactilePressable
+                  key={r.path}
+                  onPress={() => openDirectory(r.path)}
+                  style={[styles.quickRootPill, active && styles.quickRootPillActive]}
+                >
+                  <HardDrive
+                    size={12}
+                    color={active ? CORE_COLORS.cyan : CORE_COLORS.textTertiary}
+                  />
+                  <Text
+                    style={[
+                      styles.quickRootText,
+                      active && { color: CORE_COLORS.cyan },
+                    ]}
+                  >
+                    {r.name}
+                  </Text>
+                </TactilePressable>
+              );
+            })}
+          </ScrollView>
         )}
 
-        <Text style={styles.currentPathText} numberOfLines={1}>
-          {currentPath || "SELECT WHITELISTED VOLUME"}
-        </Text>
+        {/* Transfer Action Row */}
+        <View style={styles.transferRow}>
+          <View style={currentPath ? styles.transferBtnHalf : styles.transferBtnFull}>
+            <GlassButton
+              variant="prominent"
+              size="md"
+              style={styles.fullWidthBtn}
+              disabled={uploading}
+              onPress={() => handleUploadFromPhone(undefined)}
+            >
+              <Upload size={15} color="#FFFFFF" />
+              {uploading
+                ? "Uploading..."
+                : currentPath
+                ? "Send to Vault"
+                : "Send to PC (F:\\From_phone)"}
+            </GlassButton>
+          </View>
 
-        <TouchableOpacity
-          style={styles.refreshBtn}
-          onPress={() => (currentPath ? openDirectory(currentPath) : loadRoots())}
-        >
-          <RefreshCw size={13} color="#94A3B8" />
-        </TouchableOpacity>
-      </View>
-
-      {/* MOBILE -> PC TRANSFER ACTION BAR */}
-      <View style={styles.transferBar}>
-        <TouchableOpacity
-          style={styles.sendVaultBtn}
-          onPress={() => handleUploadFromPhone(undefined)}
-          disabled={uploading}
-        >
-          <Upload size={13} color="#090D16" />
-          <Text style={styles.sendVaultBtnText}>
-            {uploading ? "TRANSFERRING..." : "SEND TO PC (F:\\From_phone)"}
-          </Text>
-        </TouchableOpacity>
-
-        {currentPath && (
-          <TouchableOpacity
-            style={styles.uploadHereBtn}
-            onPress={() => handleUploadFromPhone(currentPath)}
-            disabled={uploading}
-          >
-            <Folder size={13} color="#06B6D4" />
-            <Text style={styles.uploadHereBtnText}>UPLOAD HERE</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-
-      {uploadBanner && (
-        <View
-          style={[
-            styles.transferBanner,
-            uploadBanner.ok ? styles.transferBannerOk : styles.transferBannerErr,
-          ]}
-        >
-          <Text
-            style={[
-              styles.transferBannerText,
-              { color: uploadBanner.ok ? "#10B981" : "#EF4444" },
-            ]}
-          >
-            {uploadBanner.text}
-          </Text>
-          {!uploading && (
-            <TouchableOpacity onPress={() => setUploadBanner(null)}>
-              <X size={14} color="#94A3B8" />
-            </TouchableOpacity>
+          {currentPath && (
+            <View style={styles.transferBtnHalf}>
+              <GlassButton
+                variant="primary"
+                size="md"
+                style={styles.fullWidthBtn}
+                disabled={uploading}
+                onPress={() => handleUploadFromPhone(currentPath)}
+              >
+                <FolderPlus size={15} color={CORE_COLORS.cyan} />
+                Upload Here
+              </GlassButton>
+            </View>
           )}
         </View>
-      )}
 
-      {errorMsg && (
-        <View style={styles.errorBanner}>
-          <Text style={styles.errorText}>ERR // {errorMsg}</Text>
-        </View>
-      )}
+        {/* Live Upload Progress Card */}
+        {uploadProgress && (
+          <CoreCard variant="panel" elevation="base" style={styles.progressCard}>
+            <View style={styles.progressHeader}>
+              <Text style={styles.progressTitle} numberOfLines={1}>
+                {uploadProgress.statusText}
+              </Text>
+              <GlassBadge tone="blue">
+                {uploadProgress.percent !== null
+                  ? `${uploadProgress.percent}%`
+                  : "Sending"}
+              </GlassBadge>
+            </View>
+            <GlassProgress value={uploadProgress.percent} size="md" />
+            <Text style={styles.progressDest} numberOfLines={1}>
+              Destination: {uploadProgress.targetLabel}
+            </Text>
+          </CoreCard>
+        )}
 
-      {loading ? (
-        <View style={styles.centerBox}>
-          <ActivityIndicator size="small" color="#06B6D4" />
-          <Text style={styles.loadingText}>QUERYING PC FILE SYSTEM...</Text>
+        {uploadBanner && (
+          <GlassAlert
+            key={uploadBanner.text}
+            tone={uploadBanner.ok ? "success" : "danger"}
+            onDismiss={() => setUploadBanner(null)}
+          >
+            {uploadBanner.text}
+          </GlassAlert>
+        )}
+
+        {errorMsg && (
+          <GlassAlert tone="danger" title="File System Error">
+            {errorMsg}
+          </GlassAlert>
+        )}
+      </View>
+
+      {loading && !refreshing ? (
+        <View style={styles.skeletonList}>
+          {[0, 1, 2, 3].map((k) => (
+            <CoreCard key={k} variant="subtle" style={styles.skeletonCard}>
+              <GlassSkeleton variant="text" lines={2} />
+            </CoreCard>
+          ))}
         </View>
       ) : !currentPath ? (
-        /* WHITELISTED ROOTS VIEW */
         <FlatList
           data={roots}
           keyExtractor={(item) => item.path}
-          contentContainerStyle={styles.rootsContainer}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={[
+            styles.listContent,
+            {
+              paddingBottom:
+                Math.max(insets.bottom, 12) + CORE_SPACING.floatingDockOffset,
+            },
+          ]}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={CORE_COLORS.cyan}
+              colors={[CORE_COLORS.cyan]}
+            />
+          }
           renderItem={({ item }) => (
-            <TouchableOpacity
-              style={[
-                styles.rootCard,
-                item.is_vault && { borderColor: "#06B6D4" },
-              ]}
-              activeOpacity={0.75}
+            <TactilePressable
+              haptic
               onPress={() => openDirectory(item.path)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open volume ${item.name}`}
             >
-              <View style={styles.rootCardLeft}>
-                <HardDrive size={18} color="#06B6D4" />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.rootCardTitle}>{item.name}</Text>
-                  <Text style={styles.rootCardPath}>{item.path}</Text>
-                </View>
-              </View>
-              <Text
-                style={[
-                  styles.rootStatusTag,
-                  { color: item.exists ? "#10B981" : "#F59E0B" },
-                ]}
+              <CoreCard
+                variant="panel"
+                elevation="base"
+                accentBorderColor={
+                  item.is_vault ? CORE_COLORS.cyanBorder : undefined
+                }
+                style={styles.rootCard}
               >
-                {item.exists ? "MOUNTED" : "OFFLINE"}
-              </Text>
-            </TouchableOpacity>
+                <View style={styles.rootCardRow}>
+                  <View
+                    style={[
+                      styles.rootIconBox,
+                      item.is_vault && styles.rootIconVault,
+                    ]}
+                  >
+                    <HardDrive
+                      size={20}
+                      color={item.is_vault ? CORE_COLORS.cyan : CORE_COLORS.textSecondary}
+                    />
+                  </View>
+
+                  <View style={styles.rootInfo}>
+                    <View style={styles.rootTitleRow}>
+                      <Text style={styles.rootCardTitle} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                      {item.is_vault && <GlassBadge tone="blue">Vault</GlassBadge>}
+                    </View>
+                    <Text style={styles.rootCardPath} numberOfLines={1}>
+                      {item.path}
+                    </Text>
+                  </View>
+
+                  <View style={styles.rootRight}>
+                    <GlassBadge dot tone={item.exists ? "green" : "orange"}>
+                      {item.exists ? "Mounted" : "Offline"}
+                    </GlassBadge>
+                    <ChevronRight size={16} color={CORE_COLORS.textTertiary} />
+                  </View>
+                </View>
+              </CoreCard>
+            </TactilePressable>
           )}
+          ListEmptyComponent={
+            <CoreCard variant="subtle" style={styles.emptyBox}>
+              <HardDrive size={30} color={CORE_COLORS.textSecondary} />
+              <Text style={styles.emptyTitle}>No Whitelisted Volumes</Text>
+              <Text style={styles.emptyDesc}>
+                Verify your PC connection in Settings or pull to refresh.
+              </Text>
+            </CoreCard>
+          }
         />
       ) : (
-        /* DIRECTORY ENTRIES TABLE */
         <FlatList
           data={entries}
           keyExtractor={(item) => item.path}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={[
+            styles.listContent,
+            {
+              paddingBottom:
+                Math.max(insets.bottom, 12) + CORE_SPACING.floatingDockOffset,
+            },
+          ]}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={CORE_COLORS.cyan}
+              colors={[CORE_COLORS.cyan]}
+            />
+          }
           renderItem={({ item }) => (
             <FileRow item={item} onPress={handlePressEntry} />
           )}
           ListEmptyComponent={
-            <View style={styles.centerBox}>
-              <Text style={styles.loadingText}>DIRECTORY IS EMPTY</Text>
-            </View>
+            <CoreCard variant="subtle" style={styles.emptyBox}>
+              <FolderOpen size={30} color={CORE_COLORS.textSecondary} />
+              <Text style={styles.emptyTitle}>Directory is Empty</Text>
+              <Text style={styles.emptyDesc}>
+                You can upload files directly into this folder using Upload Here above.
+              </Text>
+            </CoreCard>
           }
         />
       )}
 
-      {/* FILE PREVIEW & PC -> MOBILE DOWNLOAD MODAL */}
-      <Modal
-        visible={Boolean(selectedFile)}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSelectedFile(null)}
+      {/* File Preview & Download Glass Sheet */}
+      <GlassSheet
+        open={Boolean(selectedFile)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedFile(null);
+        }}
       >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle} numberOfLines={1}>
-                {selectedFile?.name}
-              </Text>
-              <TouchableOpacity onPress={() => setSelectedFile(null)}>
-                <X size={18} color="#94A3B8" />
-              </TouchableOpacity>
-            </View>
+        <GlassSheetContent side="bottom" closeLabel="Close file preview">
+          {selectedFile && (
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.sheetBody}
+            >
+              <GlassSheetTitle numberOfLines={2}>
+                {selectedFile.name}
+              </GlassSheetTitle>
+              <GlassSheetDescription numberOfLines={2}>
+                {selectedFile.path}
+              </GlassSheetDescription>
 
-            {selectedFile && (
-              <View style={styles.modalBody}>
-                <Text style={styles.modalMeta}>PATH: {selectedFile.path}</Text>
-                <Text style={styles.modalMeta}>
-                  TYPE: {selectedFile.category.toUpperCase()} (
-                  {selectedFile.extension || "RAW"})
-                </Text>
-
-                {selectedFile.category === "image" && (
-                  <View style={styles.imagePreviewBox}>
-                    <Image
-                      source={{
-                        uri: CoreApiClient.buildFileStreamUrl(
-                          pcIp,
-                          pcPort,
-                          authToken,
-                          selectedFile.path
-                        ),
-                      }}
-                      style={styles.previewImage}
-                      resizeMode="contain"
-                    />
-                  </View>
-                )}
-
-                {downloadStatus && (
-                  <View
-                    style={[
-                      styles.statusBox,
-                      !downloadStatus.ok && { borderColor: "#EF4444" },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.statusBoxText,
-                        !downloadStatus.ok && { color: "#EF4444" },
-                      ]}
-                    >
-                      {downloadStatus.text}
-                    </Text>
-                  </View>
-                )}
-
-                {isMediaFile && Platform.OS !== "web" && (
-                  <TouchableOpacity
-                    style={styles.galleryBtn}
-                    onPress={() => handleSaveMediaToGallery(selectedFile)}
-                    disabled={downloading}
-                  >
-                    <Camera size={14} color="#090D16" />
-                    <Text style={styles.downloadBtnText}>
-                      {downloading ? "WORKING..." : "SAVE PHOTO/VIDEO TO GALLERY"}
-                    </Text>
-                  </TouchableOpacity>
-                )}
-
-                <View style={styles.modalActions}>
-                  <TouchableOpacity
-                    style={styles.downloadBtn}
-                    onPress={() => handleSaveToPhoneFolder(selectedFile, false)}
-                    disabled={downloading}
-                  >
-                    <Download size={14} color="#090D16" />
-                    <Text style={styles.downloadBtnText}>
-                      {downloading ? "SAVING..." : "SAVE TO PHONE FOLDER"}
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.streamBtn}
-                    onPress={() => handleShareOrOpenApp(selectedFile)}
-                    disabled={downloading}
-                  >
-                    <ExternalLink size={14} color="#06B6D4" />
-                    <Text style={styles.streamBtnText}>SHARE / OPEN</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {Platform.OS !== "web" && (
-                  <View style={styles.folderChangeRow}>
-                    <TouchableOpacity
-                      onPress={() => handleSaveToPhoneFolder(selectedFile, true)}
-                      disabled={downloading}
-                    >
-                      <Text style={styles.folderChangeText}>
-                        {savedPhoneDirUri
-                          ? "CHANGE PHONE DESTINATION FOLDER"
-                          : "FIRST SAVE WILL ASK WHICH PHONE FOLDER TO USE (E.G. DOWNLOADS)"}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
+              <View style={styles.sheetMetaPills}>
+                <GlassBadge tone="blue">
+                  {selectedFile.category.toUpperCase()}
+                </GlassBadge>
+                <GlassBadge tone="neutral">
+                  {selectedFile.extension || "RAW"}
+                </GlassBadge>
               </View>
-            )}
-          </View>
-        </View>
-      </Modal>
+
+              {selectedFile.category === "image" && (
+                <View style={styles.imagePreviewBox}>
+                  <Image
+                    source={{
+                      uri: CoreApiClient.buildFileStreamUrl(
+                        pcIp,
+                        pcPort,
+                        authToken,
+                        selectedFile.path
+                      ),
+                    }}
+                    style={styles.previewImage}
+                    resizeMode="contain"
+                  />
+                </View>
+              )}
+
+              {downloadStatus && (
+                <GlassAlert
+                  tone={downloadStatus.ok ? "success" : "danger"}
+                >
+                  {downloadStatus.text}
+                </GlassAlert>
+              )}
+
+              {isMediaFile && Platform.OS !== "web" && (
+                <GlassButton
+                  variant="prominent"
+                  style={styles.sheetFullBtn}
+                  onPress={() => handleSaveMediaToGallery(selectedFile)}
+                  disabled={downloading}
+                >
+                  <Camera size={16} color="#FFFFFF" />
+                  {downloading ? "Working..." : "Save to Gallery"}
+                </GlassButton>
+              )}
+
+              <View style={styles.sheetActionsRow}>
+                <GlassButton
+                  variant="prominent"
+                  style={styles.sheetActionFlex}
+                  onPress={() => handleSaveToPhoneFolder(selectedFile, false)}
+                  disabled={downloading}
+                >
+                  <Download size={15} color="#FFFFFF" />
+                  {downloading ? "Saving..." : "Save to Phone"}
+                </GlassButton>
+
+                <GlassButton
+                  variant="primary"
+                  style={styles.sheetActionFlex}
+                  onPress={() => handleShareOrOpenApp(selectedFile)}
+                  disabled={downloading}
+                >
+                  <ExternalLink size={15} color={CORE_COLORS.cyan} />
+                  Share / Open
+                </GlassButton>
+              </View>
+
+              {Platform.OS !== "web" && (
+                <TactilePressable
+                  onPress={() => handleSaveToPhoneFolder(selectedFile, true)}
+                  disabled={downloading}
+                  style={styles.folderChangeRow}
+                >
+                  <Text style={styles.folderChangeText}>
+                    {savedPhoneDirUri
+                      ? "Change destination folder"
+                      : "First save will prompt for a phone folder (e.g. Downloads)"}
+                  </Text>
+                </TactilePressable>
+              )}
+            </ScrollView>
+          )}
+        </GlassSheetContent>
+      </GlassSheet>
     </SafeAreaView>
   );
 }
@@ -572,233 +771,207 @@ export default function FilesScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#121212",
+    backgroundColor: "transparent",
   },
-  breadcrumbBar: {
-    backgroundColor: "#181818",
-    borderBottomWidth: 1,
-    borderBottomColor: "#2A2A2A",
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+  controlsSection: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    gap: 11,
+    marginBottom: 12,
+  },
+  navBar: {
     flexDirection: "row",
     alignItems: "center",
+    padding: 8,
+    borderRadius: CORE_RADIUS.lg,
     gap: 8,
   },
-  transferBar: {
-    backgroundColor: "#151515",
-    borderBottomWidth: 1,
-    borderBottomColor: "#2A2A2A",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+  navChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-  },
-  sendVaultBtn: {
-    flex: 1,
-    backgroundColor: "#06B6D4",
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 2,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-  },
-  sendVaultBtnText: {
-    color: "#090D16",
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "900",
-    letterSpacing: 0.5,
-  },
-  uploadHereBtn: {
-    backgroundColor: "#1E1E1E",
-    borderWidth: 1,
-    borderColor: "#06B6D4",
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    borderRadius: 2,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
     gap: 5,
+    backgroundColor: CORE_COLORS.surfaceWell,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.borderSubtle,
+    paddingHorizontal: 11,
+    minHeight: 36,
+    borderRadius: 11,
   },
-  uploadHereBtnText: {
-    color: "#06B6D4",
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "800",
+  navChipActive: {
+    backgroundColor: CORE_COLORS.cyanSoft,
+    borderColor: CORE_COLORS.cyanBorder,
   },
-  transferBanner: {
+  navChipText: {
+    fontSize: 12.5,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
+  },
+  pathText: {
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textSecondary,
+    flex: 1,
+    paddingHorizontal: 4,
+  },
+  refreshIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 11,
+    backgroundColor: CORE_COLORS.surfaceWell,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.borderSubtle,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quickRootsRow: {
+    gap: 8,
+    paddingVertical: 2,
+  },
+  quickRootPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: CORE_COLORS.surfaceCard,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.borderSubtle,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
+    paddingVertical: 7,
+    borderRadius: CORE_RADIUS.pill,
+  },
+  quickRootPillActive: {
+    backgroundColor: CORE_COLORS.cyanSoft,
+    borderColor: CORE_COLORS.cyanBorder,
+  },
+  quickRootText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: CORE_COLORS.textSecondary,
+  },
+  transferRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  transferBtnFull: {
+    flex: 1,
+  },
+  transferBtnHalf: {
+    flex: 1,
+  },
+  fullWidthBtn: {
+    width: "100%",
+    alignSelf: "stretch",
+  },
+  progressCard: {
+    padding: 15,
+    gap: 10,
+  },
+  progressHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
-  },
-  transferBannerOk: {
-    backgroundColor: "rgba(16, 185, 129, 0.1)",
-    borderBottomColor: "#10B981",
-  },
-  transferBannerErr: {
-    backgroundColor: "rgba(239, 68, 68, 0.1)",
-    borderBottomColor: "#EF4444",
-  },
-  transferBannerText: {
-    flex: 1,
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "700",
-  },
-  rootPill: {
-    backgroundColor: "#121212",
-    borderWidth: 1,
-    borderColor: "#06B6D4",
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 2,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-  },
-  rootPillText: {
-    color: "#06B6D4",
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "800",
-  },
-  upPill: {
-    backgroundColor: "#1E1E1E",
-    borderWidth: 1,
-    borderColor: "#3A3A3A",
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 2,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  upPillText: {
-    color: "#E2E8F0",
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "700",
-  },
-  currentPathText: {
-    flex: 1,
-    color: "#94A3B8",
-    fontSize: 11,
-    fontFamily: "monospace",
-  },
-  refreshBtn: {
-    padding: 6,
-  },
-  errorBanner: {
-    backgroundColor: "rgba(239, 68, 68, 0.1)",
-    borderBottomWidth: 1,
-    borderBottomColor: "#EF4444",
-    padding: 10,
-  },
-  errorText: {
-    color: "#EF4444",
-    fontSize: 11,
-    fontFamily: "monospace",
-  },
-  centerBox: {
-    flex: 1,
-    padding: 32,
-    alignItems: "center",
-    justifyContent: "center",
     gap: 10,
   },
-  loadingText: {
-    color: "#64748B",
-    fontSize: 11,
-    fontFamily: "monospace",
+  progressTitle: {
+    fontSize: 13.5,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
+    flex: 1,
   },
-  rootsContainer: {
-    padding: 16,
+  progressDest: {
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textSecondary,
+  },
+  skeletonList: {
+    paddingHorizontal: CORE_SPACING.screenX,
     gap: 12,
+  },
+  skeletonCard: {
+    padding: 18,
+  },
+  listContent: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    gap: 10,
   },
   rootCard: {
-    backgroundColor: "#1E1E1E",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    padding: 14,
-    borderRadius: 2,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+    padding: 16,
   },
-  rootCardLeft: {
+  rootCardRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 13,
+  },
+  rootIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: CORE_COLORS.surfaceWell,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.borderSubtle,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rootIconVault: {
+    backgroundColor: CORE_COLORS.cyanSoft,
+    borderColor: CORE_COLORS.cyanBorder,
+  },
+  rootInfo: {
     flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  rootTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   rootCardTitle: {
-    color: "#E2E8F0",
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 15.5,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
+    flexShrink: 1,
   },
   rootCardPath: {
-    color: "#64748B",
-    fontSize: 11,
-    fontFamily: "monospace",
-    marginTop: 2,
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textSecondary,
   },
-  rootStatusTag: {
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "800",
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.85)",
-    justifyContent: "center",
-    padding: 20,
-  },
-  modalCard: {
-    backgroundColor: "#1E1E1E",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    borderRadius: 2,
-    overflow: "hidden",
-  },
-  modalHeader: {
-    backgroundColor: "#161616",
-    borderBottomWidth: 1,
-    borderBottomColor: "#2A2A2A",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+  rootRight: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    gap: 8,
   },
-  modalTitle: {
-    color: "#E2E8F0",
-    fontSize: 13,
-    fontWeight: "800",
-    flex: 1,
-    marginRight: 10,
-  },
-  modalBody: {
-    padding: 14,
+  emptyBox: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 44,
+    paddingHorizontal: 24,
     gap: 10,
   },
-  modalMeta: {
-    color: "#94A3B8",
-    fontSize: 10,
-    fontFamily: "monospace",
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
+  },
+  emptyDesc: {
+    fontSize: 13.5,
+    color: CORE_COLORS.textSecondary,
+    textAlign: "center",
+    lineHeight: 20,
+    maxWidth: 260,
+  },
+  sheetBody: {
+    gap: 14,
+    paddingBottom: 8,
+  },
+  sheetMetaPills: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 2,
   },
   imagePreviewBox: {
     height: 220,
-    backgroundColor: "#121212",
+    backgroundColor: CORE_COLORS.surfaceWell,
     borderWidth: 1,
-    borderColor: "#2A2A2A",
+    borderColor: CORE_COLORS.borderSubtle,
+    borderRadius: CORE_RADIUS.lg,
+    overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -806,74 +979,26 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
   },
-  statusBox: {
-    backgroundColor: "#121212",
-    borderWidth: 1,
-    borderColor: "#10B981",
-    padding: 8,
+  sheetFullBtn: {
+    width: "100%",
+    alignSelf: "stretch",
   },
-  statusBoxText: {
-    color: "#10B981",
-    fontSize: 10,
-    fontFamily: "monospace",
-  },
-  galleryBtn: {
-    backgroundColor: "#10B981",
-    paddingVertical: 11,
-    borderRadius: 2,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    marginTop: 4,
-  },
-  modalActions: {
+  sheetActionsRow: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 2,
   },
-  streamBtn: {
+  sheetActionFlex: {
     flex: 1,
-    backgroundColor: "#141414",
-    borderWidth: 1,
-    borderColor: "#06B6D4",
-    paddingVertical: 11,
-    borderRadius: 2,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-  },
-  streamBtnText: {
-    color: "#06B6D4",
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "800",
-  },
-  downloadBtn: {
-    flex: 1.4,
-    backgroundColor: "#06B6D4",
-    paddingVertical: 11,
-    borderRadius: 2,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-  },
-  downloadBtnText: {
-    color: "#090D16",
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "900",
+    alignSelf: "stretch",
   },
   folderChangeRow: {
     alignItems: "center",
-    paddingTop: 4,
+    paddingVertical: 6,
   },
   folderChangeText: {
-    color: "#64748B",
-    fontSize: 9,
-    fontFamily: "monospace",
+    fontSize: 12.5,
+    color: CORE_COLORS.textSecondary,
     textDecorationLine: "underline",
+    textAlign: "center",
   },
 });

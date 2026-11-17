@@ -2,14 +2,12 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
-  TouchableOpacity,
   FlatList,
   StyleSheet,
   RefreshControl,
-  ActivityIndicator,
-  Modal,
+  ScrollView,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import {
   ArrowLeft,
@@ -20,6 +18,7 @@ import {
   AlertTriangle,
   FolderGit2,
   ChevronRight,
+  Check,
 } from "lucide-react-native";
 import { HeaderStatus } from "../../../components/HeaderStatus";
 import { useConnectionStore } from "../../../store/useConnectionStore";
@@ -29,23 +28,40 @@ import {
   createNewSession,
 } from "../../../services/agentApi";
 import { AgentProject, AgentSession } from "../../../types/agent";
+import { AppScreenShell } from "../../../components/ui/AppScreenShell";
+import { CoreCard } from "../../../components/ui/CoreCard";
+import { TactilePressable } from "../../../components/ui/TactilePressable";
+import { GlassSurface } from "../../../components/glassyui/glass-surface";
+import { GlassButton } from "../../../components/glassyui/glass-button";
+import { GlassBadge } from "../../../components/glassyui/glass-badge";
+import { GlassAlert } from "../../../components/glassyui/glass-alert";
+import { GlassSkeleton } from "../../../components/glassyui/glass-skeleton";
+import {
+  GlassDialog,
+  GlassDialogContent,
+  GlassDialogDescription,
+  GlassDialogTitle,
+} from "../../../components/glassyui/glass-dialog";
+import { CORE_COLORS, CORE_RADIUS, CORE_SPACING } from "../../../theme/tokens";
+import { CORE_TYPOGRAPHY } from "../../../theme/typography";
 
 const MODEL_OPTIONS = [
-  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (Fast & Smart)" },
-  { id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen" },
-  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (Ultra Fast)" },
-  { id: "claude-opus-5-5", label: "Claude Opus 5.5 (Deep Reasoning)" },
-  { id: "gemini-4-argon", label: "Gemini 4 Argon" },
+  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", tag: "Fast & Smart" },
+  { id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", tag: "Balanced" },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", tag: "Ultra Fast" },
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5", tag: "Deep Reasoning" },
+  { id: "gemini-4-argon", label: "Gemini 4 Argon", tag: "Pro" },
 ];
 
 const MODE_OPTIONS = [
-  { id: "default", label: "Default (Ask on edits/commands)" },
-  { id: "accept-edits", label: "Accept Edits (Auto-write files)" },
-  { id: "plan", label: "Plan Mode (Careful planning)" },
+  { id: "default", label: "Default", desc: "Ask before edits & commands" },
+  { id: "accept-edits", label: "Accept Edits", desc: "Auto-write file edits" },
+  { id: "plan", label: "Plan Mode", desc: "Research & plan first" },
 ];
 
 export default function ProjectSessionsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { projectId } = useLocalSearchParams<{ projectId: string }>();
   const { pcIp, pcPort, authToken } = useConnectionStore();
   const { setActiveSession } = useAgentStore();
@@ -56,7 +72,6 @@ export default function ProjectSessionsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // New Conversation Modal State
   const [modalVisible, setModalVisible] = useState(false);
   const [creating, setCreating] = useState(false);
   const [selectedModel, setSelectedModel] = useState(MODEL_OPTIONS[0].id);
@@ -75,7 +90,7 @@ export default function ProjectSessionsScreen() {
       setProject(data.project);
       setSessions(data.sessions || []);
     } catch (err: any) {
-      setErrorMsg(err?.message || "Failed loading sessions");
+      setErrorMsg(err?.message || "Failed loading threads");
     }
   }, [pcIp, pcPort, authToken, projectId]);
 
@@ -139,246 +154,275 @@ export default function ProjectSessionsScreen() {
   };
 
   const renderSessionItem = ({ item }: { item: AgentSession }) => {
+    const borderHighlight = item.isAwaitingPermission
+      ? CORE_COLORS.amberBorder
+      : item.isRunning
+      ? CORE_COLORS.cyanBorder
+      : undefined;
+
     return (
-      <TouchableOpacity
-        style={[
-          styles.sessionCard,
-          item.isAwaitingPermission && styles.cardApproval,
-          item.isRunning && styles.cardRunning,
-        ]}
-        activeOpacity={0.8}
+      <TactilePressable
+        haptic
         onPress={() => openSession(item)}
+        accessibilityRole="button"
+        accessibilityLabel={`Open thread ${item.title}`}
       >
-        <View style={styles.sessionHeader}>
-          <View style={styles.sessionLeft}>
-            <MessageSquare size={16} color="#06B6D4" />
-            <Text style={styles.sessionTitle} numberOfLines={2}>
-              {item.title}
-            </Text>
-          </View>
-          <ChevronRight size={16} color="#64748B" />
-        </View>
-
-        <View style={styles.sessionFooter}>
-          <View style={styles.footerLeft}>
-            <Clock size={11} color="#64748B" />
-            <Text style={styles.timeText}>
-              {item.updatedAt
-                ? new Date(item.updatedAt).toLocaleString([], {
-                    month: "short",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })
-                : "Active"}
-            </Text>
+        <CoreCard
+          variant="subtle"
+          accentBorderColor={borderHighlight}
+          style={styles.sessionCard}
+        >
+          <View style={styles.sessionHeader}>
+            <View style={styles.sessionLeft}>
+              <View style={styles.sessionIconWell}>
+                <MessageSquare size={15} color={CORE_COLORS.cyan} />
+              </View>
+              <Text style={styles.sessionTitle} numberOfLines={2}>
+                {item.title}
+              </Text>
+            </View>
+            <ChevronRight size={16} color={CORE_COLORS.textTertiary} />
           </View>
 
-          <View style={styles.badgesRow}>
-            {item.activeOnPc && (
-              <View style={[styles.badge, styles.badgePc]}>
-                <Text style={styles.badgePcText}>PC LIVE</Text>
-              </View>
-            )}
-            {item.isAwaitingPermission && (
-              <View style={[styles.badge, styles.badgeApproval]}>
-                <AlertTriangle size={10} color="#F59E0B" />
-                <Text style={styles.badgeApprovalText}>APPROVAL</Text>
-              </View>
-            )}
-            {item.isRunning && (
-              <View style={[styles.badge, styles.badgeRunning]}>
-                <PlayCircle size={10} color="#06B6D4" />
-                <Text style={styles.badgeRunningText}>RUNNING</Text>
-              </View>
-            )}
+          <View style={styles.sessionFooter}>
+            <View style={styles.footerLeft}>
+              <Clock size={12} color={CORE_COLORS.textTertiary} />
+              <Text style={styles.timeText}>
+                {item.updatedAt
+                  ? new Date(item.updatedAt).toLocaleString([], {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  : "Active"}
+              </Text>
+            </View>
+
+            <View style={styles.badgesRow}>
+              {item.activeOnPc && <GlassBadge tone="green">PC Live</GlassBadge>}
+              {item.isAwaitingPermission && (
+                <GlassBadge tone="orange">
+                  <AlertTriangle size={10} color={CORE_COLORS.amber} /> Approval
+                </GlassBadge>
+              )}
+              {item.isRunning && (
+                <GlassBadge tone="blue">
+                  <PlayCircle size={10} color={CORE_COLORS.cyan} /> Running
+                </GlassBadge>
+              )}
+            </View>
           </View>
-        </View>
-      </TouchableOpacity>
+        </CoreCard>
+      </TactilePressable>
     );
   };
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <HeaderStatus title="ANTIGRAVITY // THREADS" />
+    <AppScreenShell>
+      <HeaderStatus title="Antigravity" subtitle="Workspace Threads" />
 
-      {/* Project Bar */}
-      <View style={styles.projectBar}>
-        <TouchableOpacity
-          style={styles.backBtn}
-          onPress={() => router.back()}
-          activeOpacity={0.7}
-        >
-          <ArrowLeft size={16} color="#06B6D4" />
-        </TouchableOpacity>
+      {/* Workspace Navigation Bar */}
+      <View style={styles.projectBarWrap}>
+        <GlassSurface preset="control" elevation="base" style={styles.projectBar}>
+          <TactilePressable
+            onPress={() => router.back()}
+            accessibilityRole="button"
+            accessibilityLabel="Back to workspaces"
+            style={styles.backBtn}
+          >
+            <ArrowLeft size={18} color={CORE_COLORS.cyan} />
+          </TactilePressable>
 
-        <View style={styles.projectInfo}>
-          <View style={styles.projectNameRow}>
-            <FolderGit2 size={15} color="#10B981" />
-            <Text style={styles.projectName} numberOfLines={1}>
-              {project?.name || "Workspace"}
+          <View style={styles.projectInfo}>
+            <View style={styles.projectNameRow}>
+              <FolderGit2 size={15} color={CORE_COLORS.emerald} />
+              <Text style={styles.projectName} numberOfLines={1}>
+                {project?.name || "Workspace"}
+              </Text>
+            </View>
+            <Text style={styles.projectPath} numberOfLines={1}>
+              {project?.path || ""}
             </Text>
           </View>
-          <Text style={styles.projectPath} numberOfLines={1}>
-            {project?.path || ""}
-          </Text>
-        </View>
 
-        <TouchableOpacity
-          style={styles.newThreadBtn}
-          activeOpacity={0.8}
-          onPress={() => setModalVisible(true)}
-        >
-          <Plus size={14} color="#090D16" />
-          <Text style={styles.newThreadBtnText}>New</Text>
-        </TouchableOpacity>
+          <GlassButton
+            size="sm"
+            variant="prominent"
+            onPress={() => setModalVisible(true)}
+            accessibilityLabel="Create new thread"
+          >
+            <Plus size={14} color="#FFFFFF" />
+            New
+          </GlassButton>
+        </GlassSurface>
       </View>
 
       {errorMsg ? (
-        <View style={styles.errorBox}>
-          <Text style={styles.errorText}>ERR: {errorMsg}</Text>
+        <View style={styles.errorWrap}>
+          <GlassAlert tone="danger">{errorMsg}</GlassAlert>
         </View>
       ) : null}
 
-      {loading && !refreshing ? (
-        <View style={styles.centerBox}>
-          <ActivityIndicator size="large" color="#06B6D4" />
-          <Text style={styles.loadingText}>Fetching Threads...</Text>
+      {loading && !refreshing && sessions.length === 0 ? (
+        <View style={styles.skeletonList}>
+          {[0, 1, 2].map((k) => (
+            <CoreCard key={k} variant="subtle" style={styles.skeletonCard}>
+              <GlassSkeleton variant="text" lines={2} />
+            </CoreCard>
+          ))}
         </View>
       ) : (
         <FlatList
           data={sessions}
           keyExtractor={(item) => item.sessionId}
           renderItem={renderSessionItem}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[
+            styles.listContent,
+            {
+              paddingBottom:
+                Math.max(insets.bottom, 12) + CORE_SPACING.floatingDockOffset,
+            },
+          ]}
+          showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
               onRefresh={onRefresh}
-              tintColor="#06B6D4"
+              tintColor={CORE_COLORS.cyan}
+              colors={[CORE_COLORS.cyan]}
             />
           }
           ListEmptyComponent={
-            <View style={styles.emptyBox}>
-              <MessageSquare size={36} color="#334155" />
-              <Text style={styles.emptyTitle}>No Threads in this Workspace</Text>
+            <CoreCard variant="subtle" style={styles.emptyBox}>
+              <MessageSquare size={30} color={CORE_COLORS.textSecondary} />
+              <Text style={styles.emptyTitle}>No Threads Yet</Text>
               <Text style={styles.emptyDesc}>
-                Tap "+ New" above to start chatting with Antigravity in this project!
+                Tap New above to start an Antigravity conversation in this project.
               </Text>
-            </View>
+            </CoreCard>
           }
         />
       )}
 
-      {/* Create New Session Modal */}
-      <Modal
-        visible={modalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>NEW ANTIGRAVITY SESSION</Text>
-            <Text style={styles.modalDesc}>
-              Target: {project?.name} ({project?.path})
-            </Text>
+      {/* New Session Glass Dialog */}
+      <GlassDialog open={modalVisible} onOpenChange={setModalVisible}>
+        <GlassDialogContent closeLabel="Cancel new session">
+          <GlassDialogTitle>New Antigravity Session</GlassDialogTitle>
+          <GlassDialogDescription numberOfLines={2}>
+            {project?.name} · {project?.path}
+          </GlassDialogDescription>
 
-            {/* Model Selector */}
-            <Text style={styles.modalSectionLabel}>CHOOSE MODEL</Text>
-            {MODEL_OPTIONS.map((m) => (
-              <TouchableOpacity
-                key={m.id}
-                style={[
-                  styles.optionRow,
-                  selectedModel === m.id && styles.optionRowActive,
-                ]}
-                onPress={() => setSelectedModel(m.id)}
-              >
-                <Text
-                  style={[
-                    styles.optionText,
-                    selectedModel === m.id && styles.optionTextActive,
-                  ]}
-                >
-                  {m.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-
-            {/* Mode Selector */}
-            <Text style={styles.modalSectionLabel}>EXECUTION MODE</Text>
-            {MODE_OPTIONS.map((m) => (
-              <TouchableOpacity
-                key={m.id}
-                style={[
-                  styles.optionRow,
-                  selectedMode === m.id && styles.optionRowActive,
-                ]}
-                onPress={() => setSelectedMode(m.id)}
-              >
-                <Text
-                  style={[
-                    styles.optionText,
-                    selectedMode === m.id && styles.optionTextActive,
-                  ]}
-                >
-                  {m.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-
-            <View style={styles.modalBtnRow}>
-              <TouchableOpacity
-                style={styles.cancelBtn}
-                onPress={() => setModalVisible(false)}
-              >
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.confirmBtn}
-                disabled={creating}
-                onPress={handleCreateSession}
-              >
-                {creating ? (
-                  <ActivityIndicator size="small" color="#090D16" />
-                ) : (
-                  <Text style={styles.confirmBtnText}>Launch Session</Text>
-                )}
-              </TouchableOpacity>
+          <ScrollView
+            style={styles.modalScroll}
+            showsVerticalScrollIndicator={false}
+          >
+            <Text style={styles.sectionLabel}>Model</Text>
+            <View style={styles.optionsGroup}>
+              {MODEL_OPTIONS.map((m) => {
+                const active = selectedModel === m.id;
+                return (
+                  <TactilePressable
+                    key={m.id}
+                    onPress={() => setSelectedModel(m.id)}
+                    style={[styles.optionRow, active && styles.optionRowActive]}
+                  >
+                    <View style={styles.optionLeft}>
+                      <Text
+                        style={[
+                          styles.optionTitle,
+                          active && styles.optionTitleActive,
+                        ]}
+                      >
+                        {m.label}
+                      </Text>
+                      <Text style={styles.optionSub}>{m.tag}</Text>
+                    </View>
+                    {active && <Check size={16} color={CORE_COLORS.cyan} />}
+                  </TactilePressable>
+                );
+              })}
             </View>
+
+            <Text style={[styles.sectionLabel, { marginTop: 14 }]}>
+              Execution Mode
+            </Text>
+            <View style={styles.optionsGroup}>
+              {MODE_OPTIONS.map((m) => {
+                const active = selectedMode === m.id;
+                return (
+                  <TactilePressable
+                    key={m.id}
+                    onPress={() => setSelectedMode(m.id)}
+                    style={[styles.optionRow, active && styles.optionRowActive]}
+                  >
+                    <View style={styles.optionLeft}>
+                      <Text
+                        style={[
+                          styles.optionTitle,
+                          active && styles.optionTitleActive,
+                        ]}
+                      >
+                        {m.label}
+                      </Text>
+                      <Text style={styles.optionSub}>{m.desc}</Text>
+                    </View>
+                    {active && <Check size={16} color={CORE_COLORS.cyan} />}
+                  </TactilePressable>
+                );
+              })}
+            </View>
+          </ScrollView>
+
+          <View style={styles.modalBtnRow}>
+            <GlassButton
+              variant="soft"
+              style={styles.modalBtn}
+              onPress={() => setModalVisible(false)}
+              disabled={creating}
+            >
+              Cancel
+            </GlassButton>
+            <GlassButton
+              variant="prominent"
+              style={styles.modalBtn}
+              onPress={handleCreateSession}
+              disabled={creating}
+            >
+              {creating ? "Launching..." : "Launch Session"}
+            </GlassButton>
           </View>
-        </View>
-      </Modal>
-    </SafeAreaView>
+        </GlassDialogContent>
+      </GlassDialog>
+    </AppScreenShell>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#121212",
+  projectBarWrap: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    marginBottom: 14,
   },
   projectBar: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: "#181818",
-    borderBottomWidth: 1,
-    borderBottomColor: "#2A2A2A",
+    padding: 10,
+    borderRadius: CORE_RADIUS.lg,
     gap: 10,
   },
   backBtn: {
-    backgroundColor: "#121212",
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: CORE_COLORS.surfaceWell,
     borderWidth: 1,
-    borderColor: "#2A2A2A",
-    padding: 8,
-    borderRadius: 3,
+    borderColor: CORE_COLORS.borderSubtle,
+    alignItems: "center",
+    justifyContent: "center",
   },
   projectInfo: {
     flex: 1,
+    minWidth: 0,
     gap: 2,
   },
   projectNameRow: {
@@ -387,75 +431,70 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   projectName: {
-    color: "#F1F5F9",
-    fontSize: 14,
-    fontWeight: "800",
+    fontSize: 15,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
+    flexShrink: 1,
   },
   projectPath: {
-    color: "#64748B",
-    fontSize: 10,
-    fontFamily: "monospace",
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textSecondary,
   },
-  newThreadBtn: {
-    backgroundColor: "#06B6D4",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 3,
+  errorWrap: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    marginBottom: 10,
   },
-  newThreadBtnText: {
-    color: "#090D16",
-    fontWeight: "900",
-    fontSize: 11,
-    fontFamily: "monospace",
+  skeletonList: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    gap: 12,
+  },
+  skeletonCard: {
+    padding: 18,
   },
   listContent: {
-    padding: 14,
-    paddingBottom: 24,
-    gap: 8,
+    paddingHorizontal: CORE_SPACING.screenX,
+    gap: 11,
   },
   sessionCard: {
-    backgroundColor: "#181818",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    borderRadius: 4,
-    padding: 12,
-    gap: 8,
-  },
-  cardApproval: {
-    borderColor: "#F59E0B",
-    backgroundColor: "#1C1813",
-  },
-  cardRunning: {
-    borderColor: "#06B6D4",
-    backgroundColor: "#12181C",
+    padding: 16,
+    gap: 11,
   },
   sessionHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 10,
   },
   sessionLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 11,
     flex: 1,
-    marginRight: 8,
+  },
+  sessionIconWell: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: CORE_COLORS.cyanSoft,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.cyanBorder,
+    alignItems: "center",
+    justifyContent: "center",
   },
   sessionTitle: {
-    color: "#E2E8F0",
-    fontSize: 13,
-    fontWeight: "700",
+    flex: 1,
+    fontSize: 14.5,
+    fontWeight: "600",
+    lineHeight: 20,
+    color: CORE_COLORS.textPrimary,
   },
   sessionFooter: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    borderTopWidth: 1,
-    borderTopColor: "#222222",
-    paddingTop: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: CORE_COLORS.borderSubtle,
+    paddingTop: 9,
   },
   footerLeft: {
     flexDirection: "row",
@@ -463,183 +502,82 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   timeText: {
-    color: "#64748B",
-    fontSize: 10,
-    fontFamily: "monospace",
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textTertiary,
   },
   badgesRow: {
     flexDirection: "row",
-    gap: 5,
-  },
-  badge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 2,
-  },
-  badgeApproval: {
-    backgroundColor: "#3B2506",
-    borderWidth: 1,
-    borderColor: "#F59E0B",
-  },
-  badgeApprovalText: {
-    color: "#F59E0B",
-    fontSize: 8,
-    fontFamily: "monospace",
-    fontWeight: "900",
-  },
-  badgeRunning: {
-    backgroundColor: "#082F49",
-    borderWidth: 1,
-    borderColor: "#06B6D4",
-  },
-  badgeRunningText: {
-    color: "#06B6D4",
-    fontSize: 8,
-    fontFamily: "monospace",
-    fontWeight: "900",
-  },
-  badgePc: {
-    backgroundColor: "#064E3B",
-    borderWidth: 1,
-    borderColor: "#10B981",
-  },
-  badgePcText: {
-    color: "#10B981",
-    fontSize: 8,
-    fontFamily: "monospace",
-    fontWeight: "900",
-  },
-  errorBox: {
-    backgroundColor: "#3A1212",
-    padding: 10,
-    margin: 10,
-    borderRadius: 3,
-    borderWidth: 1,
-    borderColor: "#EF4444",
-  },
-  errorText: {
-    color: "#FCA5A5",
-    fontSize: 11,
-    fontFamily: "monospace",
-  },
-  centerBox: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
-  },
-  loadingText: {
-    color: "#94A3B8",
-    fontSize: 12,
-    fontFamily: "monospace",
+    gap: 6,
   },
   emptyBox: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 60,
+    paddingVertical: 44,
+    paddingHorizontal: 24,
     gap: 10,
   },
   emptyTitle: {
-    color: "#E2E8F0",
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 16,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
   },
   emptyDesc: {
-    color: "#64748B",
-    fontSize: 12,
+    fontSize: 13.5,
+    color: CORE_COLORS.textSecondary,
     textAlign: "center",
+    lineHeight: 20,
     maxWidth: 260,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.75)",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 20,
+  modalScroll: {
+    maxHeight: 340,
+    marginTop: 14,
   },
-  modalContent: {
-    width: "100%",
-    backgroundColor: "#181818",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    borderRadius: 6,
-    padding: 18,
-    gap: 10,
+  sectionLabel: {
+    ...CORE_TYPOGRAPHY.eyebrow,
+    color: CORE_COLORS.textSecondary,
+    marginBottom: 8,
   },
-  modalTitle: {
-    color: "#06B6D4",
-    fontSize: 13,
-    fontFamily: "monospace",
-    fontWeight: "900",
-    letterSpacing: 0.8,
-  },
-  modalDesc: {
-    color: "#94A3B8",
-    fontSize: 11,
-    fontFamily: "monospace",
-    marginBottom: 6,
-  },
-  modalSectionLabel: {
-    color: "#64748B",
-    fontSize: 9.5,
-    fontFamily: "monospace",
-    fontWeight: "800",
-    letterSpacing: 0.6,
-    marginTop: 4,
+  optionsGroup: {
+    gap: 7,
   },
   optionRow: {
-    backgroundColor: "#121212",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: CORE_COLORS.surfaceWell,
     borderWidth: 1,
-    borderColor: "#2A2A2A",
-    padding: 10,
-    borderRadius: 3,
+    borderColor: CORE_COLORS.borderSubtle,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: CORE_RADIUS.md,
+    borderCurve: "continuous",
   },
   optionRowActive: {
-    borderColor: "#06B6D4",
-    backgroundColor: "#121A1D",
+    borderColor: CORE_COLORS.cyanBorder,
+    backgroundColor: CORE_COLORS.cyanSoft,
   },
-  optionText: {
-    color: "#94A3B8",
+  optionLeft: {
+    flex: 1,
+    gap: 2,
+  },
+  optionTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
+  },
+  optionTitleActive: {
+    color: CORE_COLORS.cyan,
+  },
+  optionSub: {
     fontSize: 12,
-    fontFamily: "monospace",
-  },
-  optionTextActive: {
-    color: "#06B6D4",
-    fontWeight: "700",
+    color: CORE_COLORS.textSecondary,
   },
   modalBtnRow: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 12,
+    marginTop: 18,
   },
-  cancelBtn: {
+  modalBtn: {
     flex: 1,
-    backgroundColor: "#222222",
-    paddingVertical: 10,
-    alignItems: "center",
-    borderRadius: 3,
-  },
-  cancelBtnText: {
-    color: "#94A3B8",
-    fontFamily: "monospace",
-    fontWeight: "700",
-    fontSize: 12,
-  },
-  confirmBtn: {
-    flex: 1,
-    backgroundColor: "#06B6D4",
-    paddingVertical: 10,
-    alignItems: "center",
-    borderRadius: 3,
-  },
-  confirmBtnText: {
-    color: "#090D16",
-    fontFamily: "monospace",
-    fontWeight: "900",
-    fontSize: 12,
   },
 });
-

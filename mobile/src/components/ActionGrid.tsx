@@ -1,12 +1,5 @@
 import React, { useState } from "react";
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Modal,
-  ActivityIndicator,
-} from "react-native";
+import { View, Text, StyleSheet, ActivityIndicator } from "react-native";
 import {
   Terminal,
   Activity,
@@ -15,11 +8,23 @@ import {
   Cpu,
   Power,
   RefreshCw,
-  Play,
+  ArrowUpRight,
   AlertTriangle,
 } from "lucide-react-native";
 import { QuickAction, useConnectionStore } from "../store/useConnectionStore";
 import { CoreApiClient } from "../services/api";
+import { GlassButton } from "./glassyui/glass-button";
+import { GlassAlert } from "./glassyui/glass-alert";
+import {
+  GlassDialog,
+  GlassDialogContent,
+  GlassDialogDescription,
+  GlassDialogTitle,
+} from "./glassyui/glass-dialog";
+import { CoreCard } from "./ui/CoreCard";
+import { TactilePressable } from "./ui/TactilePressable";
+import { CORE_COLORS, CORE_RADIUS } from "../theme/tokens";
+import { CORE_TYPOGRAPHY } from "../theme/typography";
 
 interface ActionGridProps {
   onRefresh: () => Promise<void>;
@@ -29,25 +34,28 @@ interface ActionGridProps {
 export const ActionGrid: React.FC<ActionGridProps> = ({ onRefresh, refreshing }) => {
   const { pcIp, pcPort, authToken, quickActions } = useConnectionStore();
   const [executingId, setExecutingId] = useState<string | null>(null);
-  const [feedbackBanner, setFeedbackBanner] = useState<string | null>(null);
+  const [feedbackBanner, setFeedbackBanner] = useState<{
+    tone: "info" | "success" | "danger";
+    text: string;
+  } | null>(null);
   const [shutdownModalVisible, setShutdownModalVisible] = useState(false);
   const [shuttingDown, setShuttingDown] = useState(false);
 
   const renderIcon = (iconName: string) => {
     const key = iconName.toLowerCase();
     if (key.includes("activity") || key.includes("task")) {
-      return <Activity size={16} color="#06B6D4" />;
+      return <Activity size={18} color={CORE_COLORS.cyan} />;
     }
     if (key.includes("folder") || key.includes("file")) {
-      return <Folder size={16} color="#06B6D4" />;
+      return <Folder size={18} color={CORE_COLORS.teal} />;
     }
     if (key.includes("lock")) {
-      return <Lock size={16} color="#06B6D4" />;
+      return <Lock size={18} color={CORE_COLORS.amber} />;
     }
     if (key.includes("cpu")) {
-      return <Cpu size={16} color="#06B6D4" />;
+      return <Cpu size={18} color={CORE_COLORS.sky} />;
     }
-    return <Terminal size={16} color="#06B6D4" />;
+    return <Terminal size={18} color={CORE_COLORS.cyan} />;
   };
 
   const handleTriggerAction = async (action: QuickAction) => {
@@ -55,9 +63,15 @@ export const ActionGrid: React.FC<ActionGridProps> = ({ onRefresh, refreshing })
     setFeedbackBanner(null);
     try {
       await CoreApiClient.executeQuickAction(pcIp, pcPort, authToken, action.id);
-      setFeedbackBanner(`DISPATCHED // ${action.name.toUpperCase()}`);
+      setFeedbackBanner({
+        tone: "success",
+        text: `Dispatched ${action.name}`,
+      });
     } catch (err: any) {
-      setFeedbackBanner(`ERR // ${err?.message || "Execution failed"}`);
+      setFeedbackBanner({
+        tone: "danger",
+        text: err?.message || "Action execution failed",
+      });
     } finally {
       setExecutingId(null);
     }
@@ -68,9 +82,16 @@ export const ActionGrid: React.FC<ActionGridProps> = ({ onRefresh, refreshing })
     try {
       await CoreApiClient.shutdownPc(pcIp, pcPort, authToken);
       setShutdownModalVisible(false);
-      setFeedbackBanner("CRITICAL // SHUTDOWN SIGNAL SENT TO PC");
+      setFeedbackBanner({
+        tone: "info",
+        text: "Shutdown signal transmitted to PC",
+      });
     } catch (err: any) {
-      setFeedbackBanner(`ERR // ${err?.message || "Shutdown failed"}`);
+      setShutdownModalVisible(false);
+      setFeedbackBanner({
+        tone: "danger",
+        text: err?.message || "Shutdown failed",
+      });
     } finally {
       setShuttingDown(false);
     }
@@ -78,188 +99,177 @@ export const ActionGrid: React.FC<ActionGridProps> = ({ onRefresh, refreshing })
 
   return (
     <View style={styles.section}>
-      {/* SECTION HEADER */}
+      {/* Section Header */}
       <View style={styles.sectionHeader}>
         <View>
-          <Text style={styles.sectionTitle}>DYNAMIC QUICK ACTIONS</Text>
+          <Text style={styles.sectionTitle}>Quick Actions</Text>
           <Text style={styles.sectionSubtitle}>
-            MAPPED FROM PC CONFIG.JSON ({quickActions.length} SLOTS)
+            {quickActions.length} host {quickActions.length === 1 ? "command" : "commands"} mapped
           </Text>
         </View>
-        <TouchableOpacity
-          style={styles.syncButton}
-          onPress={onRefresh}
+
+        <GlassButton
+          size="sm"
+          variant="primary"
           disabled={refreshing}
+          onPress={onRefresh}
+          accessibilityLabel="Reload quick actions"
         >
-          <RefreshCw size={13} color="#E2E8F0" />
-          <Text style={styles.syncButtonText}>
-            {refreshing ? "SYNCING" : "RELOAD"}
-          </Text>
-        </TouchableOpacity>
+          <RefreshCw size={13} color={CORE_COLORS.textPrimary} />
+          {refreshing ? "Syncing" : "Reload"}
+        </GlassButton>
       </View>
 
       {feedbackBanner && (
-        <View style={styles.feedbackBox}>
-          <Text style={styles.feedbackText}>{feedbackBanner}</Text>
-        </View>
+        <GlassAlert
+          key={feedbackBanner.text}
+          tone={feedbackBanner.tone}
+          onDismiss={() => setFeedbackBanner(null)}
+        >
+          {feedbackBanner.text}
+        </GlassAlert>
       )}
 
-      {/* 2-COLUMN RIGID TACTICAL GRID */}
+      {/* 2-Column Interactive Glass Action Grid */}
       <View style={styles.grid}>
         {quickActions.map((action) => {
           const isBusy = executingId === action.id;
           return (
-            <TouchableOpacity
-              key={action.id}
-              style={styles.actionCard}
-              activeOpacity={0.75}
-              onPress={() => handleTriggerAction(action)}
-              disabled={isBusy}
-            >
-              <View style={styles.actionTopRow}>
-                <View style={styles.iconBox}>{renderIcon(action.icon)}</View>
-                {isBusy ? (
-                  <ActivityIndicator size="small" color="#06B6D4" />
-                ) : (
-                  <Play size={12} color="#64748B" />
-                )}
-              </View>
-              <Text style={styles.actionName} numberOfLines={1}>
-                {action.name}
-              </Text>
-              <Text style={styles.actionCmd} numberOfLines={1}>
-                {action.command}
-              </Text>
-            </TouchableOpacity>
+            <View key={action.id} style={styles.gridItem}>
+              <TactilePressable
+                haptic
+                disabled={isBusy}
+                onPress={() => handleTriggerAction(action)}
+                accessibilityRole="button"
+                accessibilityLabel={`Run ${action.name}`}
+              >
+                <CoreCard variant="subtle" style={styles.actionCard}>
+                  <View style={styles.actionTopRow}>
+                    <View style={styles.iconBox}>{renderIcon(action.icon)}</View>
+                    {isBusy ? (
+                      <ActivityIndicator size="small" color={CORE_COLORS.cyan} />
+                    ) : (
+                      <ArrowUpRight size={15} color={CORE_COLORS.textTertiary} />
+                    )}
+                  </View>
+                  <View style={styles.actionTextCol}>
+                    <Text style={styles.actionName} numberOfLines={1}>
+                      {action.name}
+                    </Text>
+                    <Text style={styles.actionCmd} numberOfLines={1}>
+                      {action.command}
+                    </Text>
+                  </View>
+                </CoreCard>
+              </TactilePressable>
+            </View>
           );
         })}
       </View>
 
-      {/* HARDCODED SECURE SHUTDOWN PANEL */}
-      <View style={styles.dangerZone}>
-        <View style={styles.dangerInfo}>
-          <Text style={styles.dangerTitle}>SYSTEM POWER OVERRIDE</Text>
-          <Text style={styles.dangerCmd}>os.system(&quot;shutdown /s /t 1&quot;)</Text>
-        </View>
-        <TouchableOpacity
-          style={styles.shutdownButton}
-          activeOpacity={0.8}
-          onPress={() => setShutdownModalVisible(true)}
-        >
-          <Power size={15} color="#EF4444" />
-          <Text style={styles.shutdownButtonText}>SHUTDOWN PC</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* CONFIRMATION MODAL */}
-      <Modal
-        visible={shutdownModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShutdownModalVisible(false)}
+      {/* Visually Separated Destructive Power Override */}
+      <CoreCard
+        variant="subtle"
+        accentFillColor="rgba(225, 29, 72, 0.08)"
+        accentBorderColor="rgba(251, 113, 133, 0.28)"
+        style={styles.dangerCard}
       >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalBox}>
-            <View style={styles.modalHeader}>
-              <AlertTriangle size={16} color="#EF4444" />
-              <Text style={styles.modalTitle}>CONFIRM PC SHUTDOWN</Text>
-            </View>
-            <Text style={styles.modalBody}>
-              This will immediately execute{" "}
-              <Text style={styles.monoInline}>shutdown /s /t 1</Text> on the host
-              Windows machine and terminate all active sessions.
-            </Text>
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.cancelBtn}
-                onPress={() => setShutdownModalVisible(false)}
-              >
-                <Text style={styles.cancelBtnText}>ABORT</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.confirmShutdownBtn}
-                onPress={handleConfirmShutdown}
-                disabled={shuttingDown}
-              >
-                <Text style={styles.confirmShutdownText}>
-                  {shuttingDown ? "TRANSMITTING..." : "EXECUTE SHUTDOWN"}
-                </Text>
-              </TouchableOpacity>
-            </View>
+        <View style={styles.dangerInfo}>
+          <View style={styles.dangerHeader}>
+            <Power size={14} color={CORE_COLORS.coral} />
+            <Text style={styles.dangerTitle}>System Power Override</Text>
           </View>
+          <Text style={styles.dangerCmd}>shutdown /s /t 1</Text>
         </View>
-      </Modal>
+
+        <TactilePressable
+          haptic
+          onPress={() => setShutdownModalVisible(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Shut down PC"
+          style={styles.shutdownButton}
+        >
+          <Power size={14} color="#FFE4E6" />
+          <Text style={styles.shutdownButtonText}>Shut Down</Text>
+        </TactilePressable>
+      </CoreCard>
+
+      {/* Glass Confirmation Dialog */}
+      <GlassDialog
+        open={shutdownModalVisible}
+        onOpenChange={setShutdownModalVisible}
+      >
+        <GlassDialogContent closeLabel="Cancel shutdown">
+          <View style={styles.dialogHeaderRow}>
+            <View style={styles.dialogDangerBadge}>
+              <AlertTriangle size={20} color={CORE_COLORS.coral} />
+            </View>
+            <GlassDialogTitle>Shut Down Host PC?</GlassDialogTitle>
+          </View>
+
+          <GlassDialogDescription>
+            This will immediately execute{" "}
+            <Text style={styles.monoInline}>shutdown /s /t 1</Text> on your Windows
+            machine and terminate all active sessions.
+          </GlassDialogDescription>
+
+          <View style={styles.dialogActions}>
+            <GlassButton
+              variant="soft"
+              style={styles.dialogBtn}
+              onPress={() => setShutdownModalVisible(false)}
+              disabled={shuttingDown}
+            >
+              Cancel
+            </GlassButton>
+            <GlassButton
+              variant="prominent"
+              style={[styles.dialogBtn, styles.dialogConfirmBtn]}
+              onPress={handleConfirmShutdown}
+              disabled={shuttingDown}
+            >
+              {shuttingDown ? "Sending..." : "Shut Down PC"}
+            </GlassButton>
+          </View>
+        </GlassDialogContent>
+      </GlassDialog>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
   section: {
-    gap: 12,
+    gap: 14,
   },
   sectionHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    paddingHorizontal: 2,
   },
   sectionTitle: {
-    color: "#E2E8F0",
-    fontSize: 12,
-    fontWeight: "800",
-    letterSpacing: 0.9,
+    ...CORE_TYPOGRAPHY.sectionTitle,
+    color: CORE_COLORS.textPrimary,
   },
   sectionSubtitle: {
-    color: "#64748B",
-    fontSize: 10,
-    fontFamily: "monospace",
-    marginTop: 2,
-  },
-  syncButton: {
-    backgroundColor: "#1E1E1E",
-    borderWidth: 1,
-    borderColor: "#3A3A3A",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 2,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  syncButtonText: {
-    color: "#E2E8F0",
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "700",
-  },
-  feedbackBox: {
-    backgroundColor: "#161616",
-    borderLeftWidth: 3,
-    borderLeftColor: "#06B6D4",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  feedbackText: {
-    color: "#06B6D4",
-    fontSize: 11,
-    fontFamily: "monospace",
-    fontWeight: "700",
+    ...CORE_TYPOGRAPHY.caption,
+    color: CORE_COLORS.textSecondary,
+    marginTop: 1,
   },
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
-    rowGap: 10,
+    rowGap: 12,
+  },
+  gridItem: {
+    width: "48.3%",
   },
   actionCard: {
-    width: "48.6%",
-    backgroundColor: "#1E1E1E",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    borderRadius: 2,
-    padding: 12,
-    gap: 8,
+    padding: 16,
+    minHeight: 112,
+    justifyContent: "space-between",
+    gap: 12,
   },
   actionTopRow: {
     flexDirection: "row",
@@ -267,133 +277,101 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   iconBox: {
-    width: 30,
-    height: 30,
-    backgroundColor: "#121212",
+    width: 36,
+    height: 36,
+    borderRadius: 11,
+    backgroundColor: CORE_COLORS.surfaceWell,
     borderWidth: 1,
-    borderColor: "#2A2A2A",
-    borderRadius: 2,
+    borderColor: CORE_COLORS.borderSubtle,
     alignItems: "center",
     justifyContent: "center",
   },
+  actionTextCol: {
+    gap: 3,
+  },
   actionName: {
-    color: "#E2E8F0",
-    fontSize: 13,
-    fontWeight: "700",
+    ...CORE_TYPOGRAPHY.cardTitle,
+    color: CORE_COLORS.textPrimary,
   },
   actionCmd: {
-    color: "#64748B",
-    fontSize: 10,
-    fontFamily: "monospace",
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textSecondary,
   },
-  dangerZone: {
-    marginTop: 8,
-    backgroundColor: "#1A1212",
-    borderWidth: 1,
-    borderColor: "#451A1A",
-    borderRadius: 2,
-    padding: 14,
+  dangerCard: {
+    marginTop: 6,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 12,
+    padding: 16,
   },
   dangerInfo: {
-    gap: 3,
+    flex: 1,
+    gap: 4,
   },
-  dangerTitle: {
-    color: "#EF4444",
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.8,
-  },
-  dangerCmd: {
-    color: "#94A3B8",
-    fontSize: 10,
-    fontFamily: "monospace",
-  },
-  shutdownButton: {
-    backgroundColor: "#121212",
-    borderWidth: 1,
-    borderColor: "#EF4444",
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 2,
+  dangerHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
   },
-  shutdownButtonText: {
-    color: "#EF4444",
-    fontSize: 11,
-    fontFamily: "monospace",
-    fontWeight: "800",
-    letterSpacing: 0.8,
+  dangerTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: CORE_COLORS.coral,
   },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.82)",
-    justifyContent: "center",
-    padding: 24,
+  dangerCmd: {
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textSecondary,
   },
-  modalBox: {
-    backgroundColor: "#1E1E1E",
+  shutdownButton: {
+    backgroundColor: "rgba(225, 29, 72, 0.28)",
     borderWidth: 1,
-    borderColor: "#EF4444",
-    borderRadius: 2,
-    padding: 18,
-    gap: 14,
-  },
-  modalHeader: {
+    borderColor: "rgba(251, 113, 133, 0.55)",
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: CORE_RADIUS.md,
+    borderCurve: "continuous",
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 7,
+    minHeight: 44,
   },
-  modalTitle: {
-    color: "#EF4444",
+  shutdownButtonText: {
+    color: "#FFE4E6",
     fontSize: 13,
-    fontWeight: "800",
-    letterSpacing: 0.9,
+    fontWeight: "600",
   },
-  modalBody: {
-    color: "#E2E8F0",
-    fontSize: 13,
-    lineHeight: 19,
+  dialogHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 6,
+  },
+  dialogDangerBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: CORE_COLORS.coralSoft,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.coralBorder,
+    alignItems: "center",
+    justifyContent: "center",
   },
   monoInline: {
-    fontFamily: "monospace",
-    color: "#06B6D4",
+    ...CORE_TYPOGRAPHY.mono,
+    color: CORE_COLORS.cyan,
   },
-  modalActions: {
+  dialogActions: {
     flexDirection: "row",
     justifyContent: "flex-end",
     gap: 10,
-    marginTop: 4,
+    marginTop: 22,
   },
-  cancelBtn: {
-    borderWidth: 1,
-    borderColor: "#3A3A3A",
-    backgroundColor: "#121212",
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 2,
+  dialogBtn: {
+    flex: 1,
   },
-  cancelBtnText: {
-    color: "#94A3B8",
-    fontSize: 11,
-    fontFamily: "monospace",
-    fontWeight: "700",
-  },
-  confirmShutdownBtn: {
-    backgroundColor: "#EF4444",
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 2,
-  },
-  confirmShutdownText: {
-    color: "#090D16",
-    fontSize: 11,
-    fontFamily: "monospace",
-    fontWeight: "900",
+  dialogConfirmBtn: {
+    backgroundColor: "#BE123C",
+    borderRadius: 999,
   },
 });
-

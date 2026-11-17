@@ -1,13 +1,24 @@
 import React, { useEffect, useCallback, useState } from "react";
-import { View, Text } from "react-native";
+import { View, StyleSheet } from "react-native";
 import { Tabs } from "expo-router";
 import * as Notifications from "expo-notifications";
-import { Terminal, MessageSquareCode, FolderTree, Sliders, CheckCircle2, AlertCircle } from "lucide-react-native";
+import { CheckCircle2, AlertCircle } from "lucide-react-native";
 import { useForegroundWebSocket, LaunchNotificationEvent } from "../../services/ws";
 import { agentSocket } from "../../services/agentSocket";
 import { useConnectionStore } from "../../store/useConnectionStore";
 import { registerSixHourCameraSync } from "../../services/syncTask";
 import { onIncomingFileReceived, ReceivedFileResult } from "../../services/fileReceiver";
+import { GlassBackdrop } from "../../components/glassyui/glass-backdrop";
+import {
+  GlassToast,
+  GlassToastClose,
+  GlassToastDescription,
+  GlassToastTitle,
+  GlassToastViewport,
+} from "../../components/glassyui/glass-toast";
+import { AmbientBackdrop } from "../../components/ui/AppScreenShell";
+import { FloatingGlassTabBar } from "../../components/navigation/FloatingGlassTabBar";
+import { CORE_COLORS } from "../../theme/tokens";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -35,7 +46,6 @@ export default function TabLayout() {
 
     const unsubscribe = onIncomingFileReceived((result) => {
       setTransferBanner(result);
-      setTimeout(() => setTransferBanner(null), 5000);
 
       Notifications.scheduleNotificationAsync({
         content: {
@@ -71,97 +81,65 @@ export default function TabLayout() {
   useForegroundWebSocket(handleLaunchNotification);
 
   return (
-    <View style={{ flex: 1 }}>
+    <GlassBackdrop backdrop={<AmbientBackdrop />} style={styles.root}>
+      <GlassToastViewport />
+
       {transferBanner && (
-        <View
-          style={{
-            position: "absolute",
-            top: 40,
-            left: 16,
-            right: 16,
-            zIndex: 9999,
-            backgroundColor: transferBanner.ok ? "rgba(6, 78, 59, 0.95)" : "rgba(127, 29, 29, 0.95)",
-            borderColor: transferBanner.ok ? "#10B981" : "#EF4444",
-            borderWidth: 1,
-            borderRadius: 8,
-            padding: 12,
-            flexDirection: "row",
-            alignItems: "center",
-            shadowColor: "#000",
-            shadowOffset: { width: 0, height: 4 },
-            shadowOpacity: 0.4,
-            shadowRadius: 8,
-            elevation: 8,
+        <GlassToast
+          open={Boolean(transferBanner)}
+          onOpenChange={(open) => {
+            if (!open) setTransferBanner(null);
           }}
+          duration={5000}
         >
-          {transferBanner.ok ? (
-            <CheckCircle2 size={20} color="#10B981" style={{ marginRight: 8 }} />
-          ) : (
-            <AlertCircle size={20} color="#EF4444" style={{ marginRight: 8 }} />
-          )}
-          <View style={{ flex: 1 }}>
-            <Text style={{ color: "#FFF", fontWeight: "700", fontSize: 13, fontFamily: "monospace" }}>
-              {transferBanner.ok ? "RECEIVED FROM PC" : "TRANSFER ERROR"}
-            </Text>
-            <Text style={{ color: "#E2E8F0", fontSize: 12, marginTop: 2 }}>
-              {transferBanner.ok
-                ? `${transferBanner.filename} -> ${transferBanner.destination}`
-                : `${transferBanner.filename}: ${transferBanner.error}`}
-            </Text>
+          <View style={styles.toastRow}>
+            {transferBanner.ok ? (
+              <CheckCircle2 size={20} color={CORE_COLORS.emerald} />
+            ) : (
+              <AlertCircle size={20} color={CORE_COLORS.coral} />
+            )}
+            <View style={styles.toastBody}>
+              <GlassToastTitle>
+                {transferBanner.ok ? "Received from PC" : "Transfer Error"}
+              </GlassToastTitle>
+              <GlassToastDescription>
+                {transferBanner.ok
+                  ? `${transferBanner.filename} → ${transferBanner.destination}`
+                  : `${transferBanner.filename}: ${transferBanner.error}`}
+              </GlassToastDescription>
+            </View>
           </View>
-        </View>
+          <GlassToastClose />
+        </GlassToast>
       )}
+
       <Tabs
+        tabBar={(props) => <FloatingGlassTabBar {...props} />}
         screenOptions={{
-        headerShown: false,
-        tabBarStyle: {
-          backgroundColor: "#161616",
-          borderTopWidth: 1,
-          borderTopColor: "#2A2A2A",
-          height: 60,
-          paddingTop: 6,
-          paddingBottom: 8,
-          elevation: 0,
-        },
-        tabBarActiveTintColor: "#06B6D4",
-        tabBarInactiveTintColor: "#64748B",
-        tabBarLabelStyle: {
-          fontFamily: "monospace",
-          fontSize: 10,
-          fontWeight: "700",
-          letterSpacing: 0.8,
-        },
-      }}
-    >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "HOME",
-          tabBarIcon: ({ color }) => <Terminal size={18} color={color} />,
+          headerShown: false,
+          sceneStyle: { backgroundColor: "transparent" },
         }}
-      />
-      <Tabs.Screen
-        name="chat"
-        options={{
-          title: "CHAT",
-          tabBarIcon: ({ color }) => <MessageSquareCode size={18} color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="files"
-        options={{
-          title: "FILES",
-          tabBarIcon: ({ color }) => <FolderTree size={18} color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="settings"
-        options={{
-          title: "SETTINGS",
-          tabBarIcon: ({ color }) => <Sliders size={18} color={color} />,
-        }}
-      />
-    </Tabs>
-  </View>
+      >
+        <Tabs.Screen name="index" options={{ title: "Home" }} />
+        <Tabs.Screen name="chat" options={{ title: "Chat" }} />
+        <Tabs.Screen name="files" options={{ title: "Files" }} />
+        <Tabs.Screen name="settings" options={{ title: "Settings" }} />
+      </Tabs>
+    </GlassBackdrop>
   );
 }
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: CORE_COLORS.bgBase,
+  },
+  toastRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  toastBody: {
+    flex: 1,
+  },
+});

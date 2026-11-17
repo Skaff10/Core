@@ -1,116 +1,207 @@
-import React from "react";
-import { View, Text, StyleSheet } from "react-native";
+import React, { useEffect, useRef } from "react";
+import { View, Text, StyleSheet, Animated, Platform } from "react-native";
+import { Cpu } from "lucide-react-native";
 import { useConnectionStore } from "../store/useConnectionStore";
+import { useGlassTheme } from "./glassyui/glass-provider";
+import { GlassSurface } from "./glassyui/glass-surface";
+import { CORE_COLORS, CORE_RADIUS } from "../theme/tokens";
+import { CORE_TYPOGRAPHY } from "../theme/typography";
 
-export const HeaderStatus: React.FC<{ title?: string }> = ({ title = "COMMAND DECK" }) => {
+interface HeaderStatusProps {
+  title?: string;
+  subtitle?: string;
+  rightSlot?: React.ReactNode;
+}
+
+export const HeaderStatus: React.FC<HeaderStatusProps> = ({
+  title = "System Command Deck",
+  subtitle,
+  rightSlot,
+}) => {
   const { pcIp, pcPort, isConnected } = useConnectionStore();
+  const { preferences } = useGlassTheme();
+  const pulse = useRef(new Animated.Value(1)).current;
+  const nativeDriver = Platform.OS !== "web";
+
+  useEffect(() => {
+    if (!isConnected || preferences.reduceMotion) {
+      pulse.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 0.45,
+          duration: 1400,
+          useNativeDriver: nativeDriver,
+        }),
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 1400,
+          useNativeDriver: nativeDriver,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [isConnected, nativeDriver, preferences.reduceMotion, pulse]);
+
+  const resolvedSubtitle = subtitle || `${pcIp}:${pcPort}`;
 
   return (
-    <View style={styles.headerContainer}>
+    <View style={styles.wrapper}>
       <View style={styles.leftGroup}>
-        <View style={styles.brandBadge}>
-          <Text style={styles.brandBadgeText}>CORE</Text>
-        </View>
-        <View>
-          <Text style={styles.headerTitle}>{title}</Text>
-          <Text style={styles.headerSubtitle}>
-            NODE // {pcIp}:{pcPort}
+        <GlassSurface
+          preset="control"
+          elevation="base"
+          style={styles.logoMark}
+          accessibilityLabel="Core"
+        >
+          <View style={styles.logoInnerGlow} />
+          <Cpu size={18} color={CORE_COLORS.cyan} strokeWidth={2} />
+        </GlassSurface>
+
+        <View style={styles.titleCol}>
+          <Text style={styles.title} numberOfLines={1}>
+            {title}
           </Text>
+          <View style={styles.subtitleRow}>
+            <Text style={styles.subtitlePrefix}>CORE</Text>
+            <Text style={styles.subtitleDot}>·</Text>
+            <Text style={styles.subtitleText} numberOfLines={1}>
+              {resolvedSubtitle}
+            </Text>
+          </View>
         </View>
       </View>
 
-      <View style={styles.statusPill}>
-        <View
+      <View style={styles.rightGroup}>
+        {rightSlot}
+        <GlassSurface
+          preset="control"
+          elevation="none"
           style={[
-            styles.statusDot,
-            isConnected ? styles.dotOnline : styles.dotOffline,
+            styles.statusPill,
+            {
+              borderColor: isConnected
+                ? CORE_COLORS.emeraldBorder
+                : CORE_COLORS.coralBorder,
+            },
           ]}
-        />
-        <Text
-          style={[
-            styles.statusLabel,
-            { color: isConnected ? "#10B981" : "#EF4444" },
-          ]}
+          accessibilityRole="text"
+          accessibilityLabel={isConnected ? "PC Linked" : "PC Offline"}
         >
-          {isConnected ? "LINKED" : "OFFLINE"}
-        </Text>
+          <Animated.View
+            style={[
+              styles.statusDot,
+              {
+                backgroundColor: isConnected
+                  ? CORE_COLORS.emeraldFill
+                  : CORE_COLORS.coral,
+                opacity: isConnected ? pulse : 1,
+              },
+            ]}
+          />
+          <Text
+            style={[
+              styles.statusLabel,
+              {
+                color: isConnected
+                  ? CORE_COLORS.emerald
+                  : CORE_COLORS.coral,
+              },
+            ]}
+          >
+            {isConnected ? "Linked" : "Offline"}
+          </Text>
+        </GlassSurface>
       </View>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  headerContainer: {
-    backgroundColor: "#1E1E1E",
-    borderBottomWidth: 1,
-    borderBottomColor: "#2A2A2A",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+  wrapper: {
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 14,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 12,
   },
   leftGroup: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
+    flex: 1,
+    minWidth: 0,
   },
-  brandBadge: {
-    backgroundColor: "#06B6D4",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 2,
+  logoMark: {
+    width: 40,
+    height: 40,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
   },
-  brandBadgeText: {
-    color: "#090D16",
-    fontWeight: "900",
-    fontSize: 12,
-    letterSpacing: 1.2,
-    fontFamily: "monospace",
+  logoInnerGlow: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: CORE_COLORS.cyanSoft,
   },
-  headerTitle: {
-    color: "#E2E8F0",
-    fontSize: 12,
-    fontWeight: "800",
-    letterSpacing: 1,
+  titleCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
-  headerSubtitle: {
-    color: "#64748B",
+  title: {
+    ...CORE_TYPOGRAPHY.screenTitle,
+    fontSize: 19,
+    lineHeight: 24,
+    color: CORE_COLORS.textPrimary,
+  },
+  subtitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  subtitlePrefix: {
+    ...CORE_TYPOGRAPHY.eyebrow,
     fontSize: 10,
-    fontFamily: "monospace",
-    marginTop: 1,
+    color: CORE_COLORS.cyan,
+    letterSpacing: 0.9,
+  },
+  subtitleDot: {
+    color: CORE_COLORS.textTertiary,
+    fontSize: 11,
+  },
+  subtitleText: {
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textSecondary,
+    flexShrink: 1,
+  },
+  rightGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   statusPill: {
-    backgroundColor: "#121212",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 2,
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: CORE_RADIUS.pill,
+    borderWidth: 1,
   },
   statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  dotOnline: {
-    backgroundColor: "#10B981",
-    shadowColor: "#10B981",
-    shadowOpacity: 0.9,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  dotOffline: {
-    backgroundColor: "#EF4444",
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
   },
   statusLabel: {
-    fontSize: 10,
-    fontWeight: "800",
-    fontFamily: "monospace",
-    letterSpacing: 0.8,
+    fontSize: 12,
+    fontWeight: "600",
+    letterSpacing: 0.1,
   },
 });
-

@@ -11,6 +11,8 @@ import {
   ChevronUp,
 } from "lucide-react-native";
 import { ToolCallItem } from "../../types/agent";
+import { CORE_COLORS, CORE_RADIUS } from "../../theme/tokens";
+import { CORE_TYPOGRAPHY } from "../../theme/typography";
 
 export const ToolCard: React.FC<{ tool: ToolCallItem }> = ({ tool }) => {
   const [expanded, setExpanded] = useState(false);
@@ -18,24 +20,24 @@ export const ToolCard: React.FC<{ tool: ToolCallItem }> = ({ tool }) => {
   const getToolIcon = () => {
     const name = tool.name.toLowerCase();
     if (name.includes("command") || name.includes("terminal")) {
-      return <Terminal size={13} color="#06B6D4" />;
+      return <Terminal size={13} color={CORE_COLORS.cyan} />;
     }
     if (name.includes("file") || name.includes("edit") || name.includes("write")) {
-      return <FileCode size={13} color="#10B981" />;
+      return <FileCode size={13} color={CORE_COLORS.emerald} />;
     }
-    return <FolderOpen size={13} color="#F59E0B" />;
+    return <FolderOpen size={13} color={CORE_COLORS.amber} />;
   };
 
   const getStatusIcon = () => {
     switch (tool.status) {
       case "completed":
-        return <CheckCircle2 size={13} color="#10B981" />;
+        return <CheckCircle2 size={14} color={CORE_COLORS.emerald} />;
       case "failed":
-        return <AlertCircle size={13} color="#EF4444" />;
+        return <AlertCircle size={14} color={CORE_COLORS.coral} />;
       case "in_progress":
       case "pending":
       default:
-        return <Clock size={13} color="#06B6D4" />;
+        return <Clock size={14} color={CORE_COLORS.cyan} />;
     }
   };
 
@@ -43,7 +45,7 @@ export const ToolCard: React.FC<{ tool: ToolCallItem }> = ({ tool }) => {
     <View style={styles.card}>
       <TouchableOpacity
         style={styles.header}
-        activeOpacity={0.7}
+        activeOpacity={0.75}
         onPress={() => setExpanded(!expanded)}
       >
         <View style={styles.headerLeft}>
@@ -55,9 +57,9 @@ export const ToolCard: React.FC<{ tool: ToolCallItem }> = ({ tool }) => {
         <View style={styles.headerRight}>
           {getStatusIcon()}
           {expanded ? (
-            <ChevronUp size={14} color="#64748B" />
+            <ChevronUp size={14} color={CORE_COLORS.textSecondary} />
           ) : (
-            <ChevronDown size={14} color="#64748B" />
+            <ChevronDown size={14} color={CORE_COLORS.textSecondary} />
           )}
         </View>
       </TouchableOpacity>
@@ -89,65 +91,61 @@ export const ToolCard: React.FC<{ tool: ToolCallItem }> = ({ tool }) => {
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: "#16181D",
+    backgroundColor: CORE_COLORS.surfaceWell,
     borderWidth: 1,
-    borderColor: "#2D3748",
-    borderRadius: 4,
-    marginVertical: 4,
+    borderColor: CORE_COLORS.borderSubtle,
+    borderRadius: CORE_RADIUS.md,
+    borderCurve: "continuous",
+    marginVertical: 3,
     overflow: "hidden",
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    backgroundColor: "#1A202C",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
   },
   headerLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
+    gap: 8,
     flex: 1,
     marginRight: 8,
   },
   headerRight: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 7,
   },
   title: {
-    color: "#E2E8F0",
-    fontSize: 11.5,
-    fontFamily: "monospace",
-    fontWeight: "700",
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textPrimary,
+    fontWeight: "600",
+    flexShrink: 1,
   },
   body: {
-    padding: 8,
-    borderTopWidth: 1,
-    borderTopColor: "#2D3748",
-    backgroundColor: "#0F1115",
-    gap: 6,
+    padding: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: CORE_COLORS.borderSubtle,
+    backgroundColor: "rgba(4, 7, 13, 0.55)",
+    gap: 8,
   },
   section: {
-    gap: 3,
+    gap: 4,
   },
   sectionTitle: {
-    color: "#64748B",
-    fontSize: 9,
-    fontFamily: "monospace",
-    fontWeight: "800",
-    letterSpacing: 0.5,
+    ...CORE_TYPOGRAPHY.eyebrow,
+    fontSize: 9.5,
+    color: CORE_COLORS.textTertiary,
   },
   codeText: {
-    color: "#CBD5E1",
-    fontSize: 10.5,
-    fontFamily: "monospace",
-    backgroundColor: "#16181D",
-    padding: 6,
-    borderRadius: 2,
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textSecondary,
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
+    padding: 8,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#262C36",
+    borderColor: CORE_COLORS.borderSubtle,
   },
 });
-

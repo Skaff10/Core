@@ -3,7 +3,6 @@ import {
   View,
   Text,
   TextInput,
-  TouchableOpacity,
   FlatList,
   StyleSheet,
   KeyboardAvoidingView,
@@ -13,7 +12,6 @@ import {
   NativeSyntheticEvent,
   NativeScrollEvent,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import {
   ArrowLeft,
@@ -36,6 +34,12 @@ import {
 } from "../../../../services/agentApi";
 import { agentSocket } from "../../../../services/agentSocket";
 import { AgentMessage, AgentConfigOption } from "../../../../types/agent";
+import { AppScreenShell } from "../../../../components/ui/AppScreenShell";
+import { TactilePressable } from "../../../../components/ui/TactilePressable";
+import { GlassSurface } from "../../../../components/glassyui/glass-surface";
+import { GlassAlert } from "../../../../components/glassyui/glass-alert";
+import { CORE_COLORS, CORE_RADIUS, CORE_SPACING } from "../../../../theme/tokens";
+import { CORE_TYPOGRAPHY } from "../../../../theme/typography";
 
 const FALLBACK_CONFIG_OPTIONS: AgentConfigOption[] = [
   {
@@ -225,100 +229,109 @@ export default function SessionChatScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <HeaderStatus title="ANTIGRAVITY // INTERFACE" />
+    <AppScreenShell edges={["top", "bottom"]}>
+      <HeaderStatus title="Antigravity" subtitle="Active Thread" />
 
-      {/* Session Header Bar */}
-      <View style={styles.headerBar}>
-        <TouchableOpacity
-          style={styles.backBtn}
-          onPress={() => router.back()}
-          activeOpacity={0.7}
-        >
-          <ArrowLeft size={16} color="#06B6D4" />
-        </TouchableOpacity>
-
-        <View style={styles.headerTitleWrap}>
-          <Text style={styles.sessionTitle} numberOfLines={1}>
-            {activeSessionTitle || "Antigravity Session"}
-          </Text>
-          <Text style={styles.sessionCwd} numberOfLines={1}>
-            {activeSessionCwd || ""}
-          </Text>
-        </View>
-
-        <TouchableOpacity
-          style={styles.syncIconBtn}
-          onPress={handleManualSync}
-          disabled={syncing}
-          activeOpacity={0.75}
-        >
-          {syncing ? (
-            <ActivityIndicator size="small" color="#06B6D4" />
-          ) : (
-            <RotateCcw size={14} color="#94A3B8" />
-          )}
-        </TouchableOpacity>
-
-        {isRunning ? (
-          <TouchableOpacity
-            style={styles.stopBtn}
-            activeOpacity={0.8}
-            onPress={handleStop}
+      {/* Session Glass Control Bar */}
+      <View style={styles.headerBarWrap}>
+        <GlassSurface preset="control" elevation="base" style={styles.headerBar}>
+          <TactilePressable
+            onPress={() => router.back()}
+            accessibilityRole="button"
+            accessibilityLabel="Back to threads"
+            style={styles.iconBtn}
           >
-            <Square size={13} color="#EF4444" fill="#EF4444" />
-            <Text style={styles.stopText}>Stop</Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={styles.optionsBtn}
-            activeOpacity={0.8}
-            onPress={() => setOptionsMenuOpen(!optionsMenuOpen)}
-          >
-            <Layers size={14} color="#06B6D4" />
-            <Text style={styles.optionsText} numberOfLines={1}>
-              {currentModelShort.split(" ").slice(0, 2).join(" ")}
+            <ArrowLeft size={17} color={CORE_COLORS.cyan} />
+          </TactilePressable>
+
+          <View style={styles.headerTitleWrap}>
+            <Text style={styles.sessionTitle} numberOfLines={1}>
+              {activeSessionTitle || "Antigravity Session"}
             </Text>
-            <ChevronDown size={12} color="#64748B" />
-          </TouchableOpacity>
-        )}
+            <Text style={styles.sessionCwd} numberOfLines={1}>
+              {activeSessionCwd || ""}
+            </Text>
+          </View>
+
+          <TactilePressable
+            onPress={handleManualSync}
+            disabled={syncing}
+            accessibilityRole="button"
+            accessibilityLabel="Sync conversation"
+            style={styles.iconBtn}
+          >
+            {syncing ? (
+              <ActivityIndicator size="small" color={CORE_COLORS.cyan} />
+            ) : (
+              <RotateCcw size={15} color={CORE_COLORS.textSecondary} />
+            )}
+          </TactilePressable>
+
+          {isRunning ? (
+            <TactilePressable
+              haptic
+              onPress={handleStop}
+              accessibilityRole="button"
+              accessibilityLabel="Stop turn"
+              style={styles.stopBtn}
+            >
+              <Square size={12} color={CORE_COLORS.coral} fill={CORE_COLORS.coral} />
+              <Text style={styles.stopText}>Stop</Text>
+            </TactilePressable>
+          ) : (
+            <TactilePressable
+              onPress={() => setOptionsMenuOpen(!optionsMenuOpen)}
+              accessibilityRole="button"
+              accessibilityLabel="Model and mode options"
+              style={styles.optionsBtn}
+            >
+              <Layers size={14} color={CORE_COLORS.cyan} />
+              <Text style={styles.optionsText} numberOfLines={1}>
+                {currentModelShort.split(" ").slice(0, 2).join(" ")}
+              </Text>
+              <ChevronDown size={13} color={CORE_COLORS.textSecondary} />
+            </TactilePressable>
+          )}
+        </GlassSurface>
       </View>
 
-      {/* Dynamic Model / Thinking / Mode Options Drawer */}
+      {/* Expandable Options Drawer */}
       {optionsMenuOpen && (
-        <ScrollView style={styles.optionsDrawer} contentContainerStyle={styles.drawerInner}>
-          {configOptions.map((cfgGroup) => (
-            <View key={cfgGroup.id} style={styles.drawerSection}>
-              <Text style={styles.drawerLabel}>
-                {cfgGroup.name.toUpperCase()}
-              </Text>
-              <View style={styles.chipsRow}>
-                {cfgGroup.options.map((opt) => {
-                  const active = cfgGroup.currentValue === opt.value;
-                  return (
-                    <TouchableOpacity
-                      key={opt.value}
-                      style={[styles.chip, active && styles.chipActive]}
-                      onPress={() => handleSetConfigOption(cfgGroup.id, opt.value)}
-                    >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          active && styles.chipTextActive,
-                        ]}
-                      >
-                        {opt.name}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-          ))}
-        </ScrollView>
+        <View style={styles.drawerWrap}>
+          <GlassSurface preset="overlay" elevation="raised" style={styles.optionsDrawer}>
+            <ScrollView contentContainerStyle={styles.drawerInner}>
+              {configOptions.map((cfgGroup) => (
+                <View key={cfgGroup.id} style={styles.drawerSection}>
+                  <Text style={styles.drawerLabel}>{cfgGroup.name}</Text>
+                  <View style={styles.chipsRow}>
+                    {cfgGroup.options.map((opt) => {
+                      const active = cfgGroup.currentValue === opt.value;
+                      return (
+                        <TactilePressable
+                          key={opt.value}
+                          style={[styles.chip, active && styles.chipActive]}
+                          onPress={() => handleSetConfigOption(cfgGroup.id, opt.value)}
+                        >
+                          <Text
+                            style={[
+                              styles.chipText,
+                              active && styles.chipTextActive,
+                            ]}
+                          >
+                            {opt.name}
+                          </Text>
+                        </TactilePressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          </GlassSurface>
+        </View>
       )}
 
-      {/* Turn status bar */}
+      {/* Turn Status Strip */}
       <View style={styles.turnStatusBar}>
         <View style={styles.turnStatusLeft}>
           <View
@@ -326,50 +339,46 @@ export default function SessionChatScreen() {
               styles.statusDot,
               {
                 backgroundColor: isRunning
-                  ? "#06B6D4"
+                  ? CORE_COLORS.cyan
                   : pendingPerm
-                  ? "#F59E0B"
+                  ? CORE_COLORS.amber
                   : socketConnected
-                  ? "#10B981"
-                  : "#EF4444",
+                  ? CORE_COLORS.emeraldFill
+                  : CORE_COLORS.coral,
               },
             ]}
           />
           <Text style={styles.turnStatusText}>
             {isRunning
-              ? "AGENT RUNNING TURN ON PC..."
+              ? "Agent running turn on PC..."
               : pendingPerm
-              ? "WAITING ON APPROVAL"
+              ? "Waiting on approval"
               : socketConnected
-              ? "SHARED PC STORE LINKED"
-              : "RECONNECTING SOCKET..."}
+              ? "Shared PC store linked"
+              : "Reconnecting socket..."}
           </Text>
         </View>
 
         {turnState.queueDepth > 0 && (
-          <Text style={styles.queueNotice}>
-            QUEUE: {turnState.queueDepth} PENDING
-          </Text>
+          <Text style={styles.queueNotice}>Queue: {turnState.queueDepth}</Text>
         )}
       </View>
 
       {syncWarning ? (
-        <View style={styles.warnBanner}>
-          <Text style={styles.warnBannerText} numberOfLines={2}>
-            SYNC NOTICE: {syncWarning}
-          </Text>
+        <View style={styles.warnWrap}>
+          <GlassAlert tone="warning">{syncWarning}</GlassAlert>
         </View>
       ) : null}
 
-      {/* Main Messages Stream */}
+      {/* Messages & Composer */}
       <KeyboardAvoidingView
         style={styles.flexOne}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
       >
         {loadingHistory ? (
           <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#06B6D4" />
+            <ActivityIndicator size="small" color={CORE_COLORS.cyan} />
             <Text style={styles.loadingHistoryText}>
               Syncing conversation from Antigravity...
             </Text>
@@ -390,17 +399,16 @@ export default function SessionChatScreen() {
             }}
             ListEmptyComponent={
               <View style={styles.emptyBox}>
-                <MessageSquare size={32} color="#334155" />
+                <MessageSquare size={32} color={CORE_COLORS.textTertiary} />
                 <Text style={styles.emptyTitle}>Conversation Ready</Text>
                 <Text style={styles.emptyDesc}>
-                  Messages here share Antigravity&apos;s PC store and appear in your workspace history.
+                  Messages share Antigravity&apos;s PC store and appear in your workspace history.
                 </Text>
               </View>
             }
           />
         )}
 
-        {/* Sticky Permission Approval Card */}
         {pendingPerm && (
           <View style={styles.stickyPermWrap}>
             <PermissionCard
@@ -410,220 +418,201 @@ export default function SessionChatScreen() {
           </View>
         )}
 
-        {/* Composer Input Bar */}
-        <View style={styles.inputBar}>
-          <TextInput
-            style={styles.textInput}
-            value={promptText}
-            onChangeText={setPromptText}
-            placeholder={`Instruct Antigravity in ${
-              activeSessionTitle ? activeSessionTitle.slice(0, 20) : "project"
-            }...`}
-            placeholderTextColor="#64748B"
-            multiline
-          />
-          <TouchableOpacity
-            style={[
-              styles.sendBtn,
-              !promptText.trim() && styles.sendBtnDisabled,
-            ]}
-            onPress={handleSend}
-            activeOpacity={0.8}
-            disabled={!promptText.trim()}
-          >
-            <Send size={15} color="#090D16" />
-          </TouchableOpacity>
+        <View style={styles.composerWrap}>
+          <GlassSurface preset="overlay" elevation="raised" style={styles.inputBar}>
+            <TextInput
+              style={styles.textInput}
+              value={promptText}
+              onChangeText={setPromptText}
+              placeholder={`Message ${
+                activeSessionTitle ? activeSessionTitle.slice(0, 22) : "Antigravity"
+              }...`}
+              placeholderTextColor={CORE_COLORS.textTertiary}
+              multiline
+            />
+            <TactilePressable
+              haptic
+              onPress={handleSend}
+              disabled={!promptText.trim()}
+              accessibilityRole="button"
+              accessibilityLabel="Send prompt"
+              style={[
+                styles.sendBtn,
+                !promptText.trim() && styles.sendBtnDisabled,
+              ]}
+            >
+              <Send size={16} color="#FFFFFF" />
+            </TactilePressable>
+          </GlassSurface>
         </View>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </AppScreenShell>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#121212",
-  },
   flexOne: {
     flex: 1,
+  },
+  headerBarWrap: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    marginBottom: 8,
   },
   headerBar: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#181818",
-    borderBottomWidth: 1,
-    borderBottomColor: "#2A2A2A",
+    padding: 8,
+    borderRadius: CORE_RADIUS.lg,
     gap: 8,
   },
-  backBtn: {
-    backgroundColor: "#121212",
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 11,
+    backgroundColor: CORE_COLORS.surfaceWell,
     borderWidth: 1,
-    borderColor: "#2A2A2A",
-    padding: 7,
-    borderRadius: 3,
+    borderColor: CORE_COLORS.borderSubtle,
+    alignItems: "center",
+    justifyContent: "center",
   },
   headerTitleWrap: {
     flex: 1,
-    gap: 2,
+    minWidth: 0,
+    gap: 1,
   },
   sessionTitle: {
-    color: "#F1F5F9",
-    fontSize: 13,
-    fontWeight: "800",
+    fontSize: 14,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
   },
   sessionCwd: {
-    color: "#64748B",
-    fontSize: 9.5,
-    fontFamily: "monospace",
-  },
-  syncIconBtn: {
-    backgroundColor: "#121212",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    padding: 7,
-    borderRadius: 3,
+    ...CORE_TYPOGRAPHY.monoSmall,
+    fontSize: 10,
+    color: CORE_COLORS.textSecondary,
   },
   stopBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
-    backgroundColor: "#3B1212",
+    backgroundColor: CORE_COLORS.coralSoft,
     borderWidth: 1,
-    borderColor: "#EF4444",
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 3,
+    borderColor: CORE_COLORS.coralBorder,
+    paddingHorizontal: 11,
+    height: 36,
+    borderRadius: 11,
   },
   stopText: {
-    color: "#EF4444",
-    fontSize: 11,
-    fontFamily: "monospace",
-    fontWeight: "800",
+    color: CORE_COLORS.coral,
+    fontSize: 12,
+    fontWeight: "600",
   },
   optionsBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
-    backgroundColor: "#121212",
+    backgroundColor: CORE_COLORS.surfaceWell,
     borderWidth: 1,
-    borderColor: "#2A2A2A",
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 3,
-    maxWidth: 120,
+    borderColor: CORE_COLORS.borderSubtle,
+    paddingHorizontal: 10,
+    height: 36,
+    borderRadius: 11,
+    maxWidth: 132,
   },
   optionsText: {
-    color: "#06B6D4",
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "700",
+    color: CORE_COLORS.cyan,
+    fontSize: 12,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
+  drawerWrap: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    marginBottom: 8,
   },
   optionsDrawer: {
     maxHeight: 240,
-    backgroundColor: "#1A1D24",
-    borderBottomWidth: 1,
-    borderBottomColor: "#06B6D4",
+    borderRadius: CORE_RADIUS.lg,
   },
   drawerInner: {
-    padding: 12,
-    gap: 10,
+    padding: 14,
+    gap: 12,
   },
   drawerSection: {
-    gap: 6,
+    gap: 7,
   },
   drawerLabel: {
-    color: "#64748B",
-    fontSize: 8.5,
-    fontFamily: "monospace",
-    fontWeight: "900",
-    letterSpacing: 0.6,
+    ...CORE_TYPOGRAPHY.eyebrow,
+    color: CORE_COLORS.textSecondary,
   },
   chipsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 6,
+    gap: 7,
   },
   chip: {
-    backgroundColor: "#121212",
+    backgroundColor: CORE_COLORS.surfaceWell,
     borderWidth: 1,
-    borderColor: "#2D3748",
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 3,
+    borderColor: CORE_COLORS.borderSubtle,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: CORE_RADIUS.sm,
   },
   chipActive: {
-    borderColor: "#06B6D4",
-    backgroundColor: "#082F49",
+    borderColor: CORE_COLORS.cyanBorder,
+    backgroundColor: CORE_COLORS.cyanSoft,
   },
   chipText: {
-    color: "#94A3B8",
-    fontSize: 10.5,
-    fontFamily: "monospace",
+    color: CORE_COLORS.textSecondary,
+    fontSize: 12.5,
+    fontWeight: "500",
   },
   chipTextActive: {
-    color: "#06B6D4",
-    fontWeight: "700",
+    color: CORE_COLORS.cyan,
+    fontWeight: "600",
   },
   turnStatusBar: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    backgroundColor: "#141414",
-    borderBottomWidth: 1,
-    borderBottomColor: "#222222",
+    paddingHorizontal: CORE_SPACING.screenX + 4,
+    paddingBottom: 8,
   },
   turnStatusLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 7,
   },
   statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
   },
   turnStatusText: {
-    color: "#64748B",
-    fontSize: 9,
-    fontFamily: "monospace",
-    fontWeight: "700",
+    fontSize: 12,
+    fontWeight: "500",
+    color: CORE_COLORS.textSecondary,
   },
   queueNotice: {
-    color: "#F59E0B",
-    fontSize: 8.5,
-    fontFamily: "monospace",
-    fontWeight: "800",
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.amber,
+    fontWeight: "600",
   },
-  warnBanner: {
-    backgroundColor: "#2B1E08",
-    borderBottomWidth: 1,
-    borderBottomColor: "#F59E0B",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  warnBannerText: {
-    color: "#FDE68A",
-    fontSize: 10,
-    fontFamily: "monospace",
+  warnWrap: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    marginBottom: 8,
   },
   loadingBox: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: 10,
   },
   loadingHistoryText: {
-    color: "#64748B",
-    fontSize: 11,
-    fontFamily: "monospace",
+    fontSize: 13,
+    color: CORE_COLORS.textSecondary,
   },
   messagesList: {
-    padding: 12,
-    paddingBottom: 16,
+    paddingHorizontal: CORE_SPACING.screenX,
+    paddingVertical: 8,
     flexGrow: 1,
   },
   emptyBox: {
@@ -634,53 +623,51 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyTitle: {
-    color: "#E2E8F0",
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 16,
+    fontWeight: "600",
+    color: CORE_COLORS.textPrimary,
   },
   emptyDesc: {
-    color: "#64748B",
-    fontSize: 11.5,
+    fontSize: 13.5,
+    color: CORE_COLORS.textSecondary,
     textAlign: "center",
     maxWidth: 260,
-    lineHeight: 17,
+    lineHeight: 20,
   },
   stickyPermWrap: {
-    paddingHorizontal: 12,
+    paddingHorizontal: CORE_SPACING.screenX,
+  },
+  composerWrap: {
+    paddingHorizontal: CORE_SPACING.screenX,
+    paddingTop: 6,
+    paddingBottom: 10,
   },
   inputBar: {
-    backgroundColor: "#181818",
-    borderTopWidth: 1,
-    borderTopColor: "#2A2A2A",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderRadius: 22,
+    padding: 8,
+    paddingLeft: 14,
     flexDirection: "row",
     alignItems: "flex-end",
     gap: 8,
   },
   textInput: {
     flex: 1,
-    backgroundColor: "#121212",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    borderRadius: 3,
-    color: "#E2E8F0",
-    paddingHorizontal: 10,
+    color: CORE_COLORS.textPrimary,
     paddingVertical: 8,
-    fontSize: 12.5,
-    maxHeight: 110,
-    fontFamily: "monospace",
+    fontSize: 15,
+    maxHeight: 115,
+    lineHeight: 20,
   },
   sendBtn: {
-    backgroundColor: "#06B6D4",
-    width: 38,
-    height: 36,
-    borderRadius: 3,
+    backgroundColor: CORE_COLORS.blueFill,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
   },
   sendBtnDisabled: {
-    backgroundColor: "#2A2A2A",
+    backgroundColor: "rgba(255, 255, 255, 0.10)",
     opacity: 0.5,
   },
 });

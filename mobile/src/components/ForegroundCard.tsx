@@ -1,220 +1,206 @@
 import React from "react";
 import { View, Text, StyleSheet } from "react-native";
-import { Monitor, Cpu, HardDrive } from "lucide-react-native";
+import { Monitor, Cpu, MemoryStick } from "lucide-react-native";
 import { useConnectionStore } from "../store/useConnectionStore";
+import { CoreCard } from "./ui/CoreCard";
+import { AnimatedBar } from "./ui/MotionPrimitives";
+import { GlassBadge } from "./glassyui/glass-badge";
+import { CORE_COLORS, CORE_RADIUS } from "../theme/tokens";
+import { CORE_TYPOGRAPHY } from "../theme/typography";
+
+function getLoadColor(percent: number, defaultColor: string): string {
+  if (percent >= 90) return CORE_COLORS.coral;
+  if (percent >= 75) return CORE_COLORS.amber;
+  return defaultColor;
+}
 
 export const ForegroundCard: React.FC = () => {
   const { telemetry, isConnected } = useConnectionStore();
 
+  const cpuPct = telemetry?.cpu_percent ?? 0;
+  const ramPct = telemetry?.ram_percent ?? 0;
+  const cpuColor = getLoadColor(cpuPct, CORE_COLORS.cyan);
+  const ramColor = getLoadColor(ramPct, CORE_COLORS.teal);
+
   return (
-    <View style={styles.card}>
-      <View style={styles.cardHeader}>
-        <View style={styles.cardTitleGroup}>
-          <Monitor size={14} color="#06B6D4" />
-          <Text style={styles.cardHeaderLabel}>ACTIVE FOREGROUND WINDOW</Text>
+    <CoreCard variant="panel" elevation="raised">
+      {/* Header Row */}
+      <View style={styles.headerRow}>
+        <View style={styles.titleGroup}>
+          <View style={styles.iconWell}>
+            <Monitor size={15} color={CORE_COLORS.cyan} />
+          </View>
+          <View>
+            <Text style={styles.eyebrow}>Active Window</Text>
+          </View>
         </View>
-        <Text style={styles.streamBadge}>
-          {isConnected ? "WS // 2.0s POLL" : "STREAM IDLE"}
-        </Text>
+
+        <GlassBadge dot tone={isConnected ? "blue" : "neutral"}>
+          {isConnected ? "Live · 2s" : "Idle"}
+        </GlassBadge>
       </View>
 
-      <View style={styles.cardBody}>
-        <Text style={styles.windowTitle} numberOfLines={2}>
-          {telemetry?.window_title || "Awaiting PC telemetry stream..."}
-        </Text>
+      {/* Hero Window Title */}
+      <Text style={styles.windowTitle} numberOfLines={2}>
+        {telemetry?.window_title || "Awaiting PC telemetry stream..."}
+      </Text>
 
-        <View style={styles.metaRow}>
-          <View style={styles.metaTag}>
-            <Text style={styles.metaKey}>PROC</Text>
-            <Text style={styles.metaVal}>
-              {telemetry?.process_name || "---"}
-            </Text>
-          </View>
-          <View style={styles.metaTag}>
-            <Text style={styles.metaKey}>PID</Text>
-            <Text style={styles.metaVal}>
-              {telemetry?.pid ? String(telemetry.pid) : "---"}
-            </Text>
-          </View>
-          <View style={styles.metaTag}>
-            <Text style={styles.metaKey}>SYNC</Text>
-            <Text style={styles.metaVal}>
-              {telemetry?.timestamp || "--:--:--"}
-            </Text>
-          </View>
+      {/* Process / PID / Sync Metadata Pills */}
+      <View style={styles.metaRow}>
+        <View style={styles.metaChip}>
+          <Text style={styles.metaKey}>PROC</Text>
+          <Text style={styles.metaValue} numberOfLines={1}>
+            {telemetry?.process_name || "---"}
+          </Text>
         </View>
-
-        <View style={styles.metricsGrid}>
-          <View style={styles.metricBox}>
-            <View style={styles.metricTop}>
-              <View style={styles.metricLabelRow}>
-                <Cpu size={12} color="#94A3B8" />
-                <Text style={styles.metricLabel}>CPU LOAD</Text>
-              </View>
-              <Text style={styles.metricValue}>
-                {telemetry ? `${telemetry.cpu_percent}%` : "--%"}
-              </Text>
-            </View>
-            <View style={styles.barTrack}>
-              <View
-                style={[
-                  styles.barFill,
-                  {
-                    width: `${Math.min(telemetry?.cpu_percent || 0, 100)}%`,
-                    backgroundColor: "#06B6D4",
-                  },
-                ]}
-              />
-            </View>
-          </View>
-
-          <View style={styles.metricBox}>
-            <View style={styles.metricTop}>
-              <View style={styles.metricLabelRow}>
-                <HardDrive size={12} color="#94A3B8" />
-                <Text style={styles.metricLabel}>MEMORY</Text>
-              </View>
-              <Text style={styles.metricValue}>
-                {telemetry
-                  ? `${telemetry.ram_used_gb}/${telemetry.ram_total_gb} GB`
-                  : "-- GB"}
-              </Text>
-            </View>
-            <View style={styles.barTrack}>
-              <View
-                style={[
-                  styles.barFill,
-                  {
-                    width: `${Math.min(telemetry?.ram_percent || 0, 100)}%`,
-                    backgroundColor: "#E2E8F0",
-                  },
-                ]}
-              />
-            </View>
-          </View>
+        <View style={styles.metaChip}>
+          <Text style={styles.metaKey}>PID</Text>
+          <Text style={styles.metaValue}>
+            {telemetry?.pid ? String(telemetry.pid) : "---"}
+          </Text>
+        </View>
+        <View style={styles.metaChip}>
+          <Text style={styles.metaKey}>SYNC</Text>
+          <Text style={styles.metaValue}>
+            {telemetry?.timestamp || "--:--:--"}
+          </Text>
         </View>
       </View>
-    </View>
+
+      {/* CPU & Memory Metrics */}
+      <View style={styles.metricsRow}>
+        <View style={styles.metricWell}>
+          <View style={styles.metricTop}>
+            <View style={styles.metricLabelGroup}>
+              <Cpu size={13} color={CORE_COLORS.textSecondary} />
+              <Text style={styles.metricLabel}>CPU</Text>
+            </View>
+            <Text style={[styles.metricHero, { color: cpuColor }]}>
+              {telemetry ? `${cpuPct.toFixed(0)}%` : "--%"}
+            </Text>
+          </View>
+          <AnimatedBar percent={cpuPct} color={cpuColor} height={6} />
+          <Text style={styles.metricSub}>Processor load</Text>
+        </View>
+
+        <View style={styles.metricWell}>
+          <View style={styles.metricTop}>
+            <View style={styles.metricLabelGroup}>
+              <MemoryStick size={13} color={CORE_COLORS.textSecondary} />
+              <Text style={styles.metricLabel}>Memory</Text>
+            </View>
+            <Text style={[styles.metricHero, { color: ramColor }]}>
+              {telemetry ? `${ramPct.toFixed(0)}%` : "--%"}
+            </Text>
+          </View>
+          <AnimatedBar percent={ramPct} color={ramColor} height={6} />
+          <Text style={styles.metricSub} numberOfLines={1}>
+            {telemetry
+              ? `${telemetry.ram_used_gb} / ${telemetry.ram_total_gb} GB`
+              : "-- / -- GB"}
+          </Text>
+        </View>
+      </View>
+    </CoreCard>
   );
 };
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: "#1E1E1E",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    borderRadius: 2,
-    marginBottom: 16,
-  },
-  cardHeader: {
-    backgroundColor: "#181818",
-    borderBottomWidth: 1,
-    borderBottomColor: "#2A2A2A",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+  headerRow: {
     flexDirection: "row",
+    alignItems: "center",
     justifyContent: "space-between",
-    alignItems: "center",
+    marginBottom: 12,
   },
-  cardTitleGroup: {
+  titleGroup: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 10,
   },
-  cardHeaderLabel: {
-    color: "#E2E8F0",
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.9,
+  iconWell: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    backgroundColor: CORE_COLORS.cyanSoft,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.cyanBorder,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  streamBadge: {
-    color: "#06B6D4",
-    fontSize: 10,
-    fontFamily: "monospace",
-    fontWeight: "700",
-  },
-  cardBody: {
-    padding: 14,
-    gap: 12,
+  eyebrow: {
+    ...CORE_TYPOGRAPHY.eyebrow,
+    color: CORE_COLORS.textSecondary,
   },
   windowTitle: {
-    color: "#E2E8F0",
-    fontSize: 16,
-    fontWeight: "700",
-    lineHeight: 22,
+    fontSize: 18,
+    fontWeight: "600",
+    lineHeight: 24,
+    letterSpacing: -0.3,
+    color: CORE_COLORS.textPrimary,
+    marginBottom: 14,
   },
   metaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
+    marginBottom: 16,
   },
-  metaTag: {
-    backgroundColor: "#121212",
-    borderWidth: 1,
-    borderColor: "#2A2A2A",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 2,
+  metaChip: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
+    backgroundColor: CORE_COLORS.surfaceWell,
+    borderWidth: 1,
+    borderColor: CORE_COLORS.borderSubtle,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: CORE_RADIUS.sm,
+    maxWidth: "100%",
   },
   metaKey: {
-    color: "#64748B",
-    fontSize: 10,
-    fontWeight: "800",
-    fontFamily: "monospace",
+    ...CORE_TYPOGRAPHY.eyebrow,
+    fontSize: 9.5,
+    color: CORE_COLORS.textTertiary,
   },
-  metaVal: {
-    color: "#06B6D4",
-    fontSize: 11,
-    fontWeight: "700",
-    fontFamily: "monospace",
+  metaValue: {
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.cyan,
+    fontWeight: "600",
+    flexShrink: 1,
   },
-  metricsGrid: {
+  metricsRow: {
     flexDirection: "row",
-    gap: 10,
-    marginTop: 2,
+    gap: 12,
   },
-  metricBox: {
+  metricWell: {
     flex: 1,
-    backgroundColor: "#141414",
+    backgroundColor: CORE_COLORS.surfaceWell,
     borderWidth: 1,
-    borderColor: "#2A2A2A",
-    padding: 10,
-    borderRadius: 2,
-    gap: 8,
+    borderColor: CORE_COLORS.borderSubtle,
+    borderRadius: CORE_RADIUS.md,
+    padding: 14,
+    gap: 9,
   },
   metricTop: {
     flexDirection: "row",
+    alignItems: "baseline",
     justifyContent: "space-between",
-    alignItems: "center",
   },
-  metricLabelRow: {
+  metricLabelGroup: {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
   },
   metricLabel: {
-    color: "#94A3B8",
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 0.6,
+    fontSize: 12,
+    fontWeight: "600",
+    color: CORE_COLORS.textSecondary,
   },
-  metricValue: {
-    color: "#E2E8F0",
-    fontSize: 11,
-    fontFamily: "monospace",
-    fontWeight: "700",
+  metricHero: {
+    ...CORE_TYPOGRAPHY.metricValue,
   },
-  barTrack: {
-    height: 4,
-    backgroundColor: "#262626",
-    borderRadius: 1,
-    overflow: "hidden",
-  },
-  barFill: {
-    height: "100%",
+  metricSub: {
+    ...CORE_TYPOGRAPHY.monoSmall,
+    color: CORE_COLORS.textTertiary,
   },
 });
-
