@@ -21,6 +21,7 @@ import {
   ChevronDown,
   RotateCcw,
   MessageSquare,
+  Check,
 } from "lucide-react-native";
 import { HeaderStatus } from "../../../../components/HeaderStatus";
 import { AgentBubble } from "../../../../components/agent/AgentBubble";
@@ -31,6 +32,7 @@ import {
   fetchSessionHistory,
   syncSessionFromPc,
   cancelTurn,
+  setSessionOption,
 } from "../../../../services/agentApi";
 import { agentSocket } from "../../../../services/agentSocket";
 import { AgentMessage, AgentConfigOption } from "../../../../types/agent";
@@ -38,6 +40,13 @@ import { AppScreenShell } from "../../../../components/ui/AppScreenShell";
 import { TactilePressable } from "../../../../components/ui/TactilePressable";
 import { GlassSurface } from "../../../../components/glassyui/glass-surface";
 import { GlassAlert } from "../../../../components/glassyui/glass-alert";
+import { GlassButton } from "../../../../components/glassyui/glass-button";
+import {
+  GlassDialog,
+  GlassDialogContent,
+  GlassDialogDescription,
+  GlassDialogTitle,
+} from "../../../../components/glassyui/glass-dialog";
 import { CORE_COLORS, CORE_RADIUS, CORE_SPACING } from "../../../../theme/tokens";
 import { CORE_TYPOGRAPHY } from "../../../../theme/typography";
 
@@ -45,12 +54,25 @@ const FALLBACK_CONFIG_OPTIONS: AgentConfigOption[] = [
   {
     id: "model",
     name: "Model",
-    currentValue: "claude-sonnet-5-5",
+    currentValue: "gemini-4-argon",
     options: [
-      { value: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+      { value: "gemini-4-argon", name: "Gemini 4 Argon" },
       { value: "gemini-4-hydrogen", name: "Gemini 4 Hydrogen" },
+      { value: "gemini-pro-orchestrator-g1-pro", name: "Orchestrator (Argon)" },
       { value: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
       { value: "claude-opus-5-5", name: "Claude Opus 5.5" },
+      { value: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+      { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+    ],
+  },
+  {
+    id: "thought_level",
+    name: "Thinking Level",
+    currentValue: "medium",
+    options: [
+      { value: "low", name: "Low" },
+      { value: "medium", name: "Medium" },
+      { value: "high", name: "High" },
     ],
   },
   {
@@ -70,16 +92,18 @@ export default function SessionChatScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
   const { pcIp, pcPort, authToken } = useConnectionStore();
   const {
+    activeSessionId,
     activeSessionCwd,
     activeSessionTitle,
     messagesBySession,
     sessionStates,
     configOptionsBySession,
     selectedModel,
-    setSelectedModel,
-    setSelectedMode,
+    selectedThoughtLevel,
+    setActiveSession,
     setHistory,
     setSessionConfigOptions,
+    updateSessionConfigOptionLocal,
     setSessionCommands,
     socketConnected,
   } = useAgentStore();
@@ -87,11 +111,14 @@ export default function SessionChatScreen() {
   const [promptText, setPromptText] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [savingOption, setSavingOption] = useState(false);
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [optionsMenuOpen, setOptionsMenuOpen] = useState(false);
 
   const flatListRef = useRef<FlatList<AgentMessage> | null>(null);
   const nearBottomRef = useRef(true);
+  const activeCwdRef = useRef(activeSessionCwd);
+  activeCwdRef.current = activeSessionCwd;
 
   const sid = sessionId || "";
   const messages = messagesBySession[sid] || [];
@@ -107,9 +134,19 @@ export default function SessionChatScreen() {
 
   const currentModelOpt = configOptions.find((o) => o.id === "model");
   const currentModelValue = currentModelOpt?.currentValue || selectedModel;
-  const currentModelShort =
+  const currentModelLabel =
     currentModelOpt?.options.find((x) => x.value === currentModelValue)?.name ||
     currentModelValue;
+  const currentModelShort = currentModelLabel
+    .replace("Gemini ", "G")
+    .replace("Claude ", "C.")
+    .replace("Orchestrator (Argon)", "Orch.");
+
+  const currentThoughtOpt = configOptions.find((o) => o.id === "thought_level");
+  const currentThoughtValue = currentThoughtOpt?.currentValue || selectedThoughtLevel;
+  const currentThoughtLabel =
+    currentThoughtOpt?.options.find((x) => x.value === currentThoughtValue)?.name ||
+    currentThoughtValue;
 
   const isRunning = turnState.state === "running";
   const pendingPerm = turnState.pendingPermission;
@@ -124,7 +161,7 @@ export default function SessionChatScreen() {
         pcPort,
         authToken,
         sid,
-        activeSessionCwd
+        activeCwdRef.current
       );
       setHistory(sid, res.messages);
       if (res.configOptions.length > 0) {
@@ -146,11 +183,17 @@ export default function SessionChatScreen() {
     pcIp,
     pcPort,
     authToken,
-    activeSessionCwd,
     setHistory,
     setSessionConfigOptions,
     setSessionCommands,
   ]);
+
+  useEffect(() => {
+    if (!sid) return;
+    if (activeSessionId !== sid) {
+      setActiveSession(sid);
+    }
+  }, [sid, activeSessionId, setActiveSession]);
 
   useEffect(() => {
     if (!sid || !pcIp || !authToken) return;
@@ -212,13 +255,34 @@ export default function SessionChatScreen() {
     agentSocket.respondPermission(sid, pendingPerm.request_id, optionId);
   };
 
-  const handleSetConfigOption = (configId: string, value: string) => {
-    if (configId === "model") setSelectedModel(value);
-    if (configId === "mode") setSelectedMode(value);
-    if (sid) {
-      agentSocket.setOption(sid, configId, value);
+  const handleSetConfigOption = async (configId: string, value: string) => {
+    if (!sid) return;
+    const prevSnapshot = configOptionsBySession[sid];
+    updateSessionConfigOptionLocal(sid, configId, value, FALLBACK_CONFIG_OPTIONS);
+
+    if (!pcIp || !authToken) return;
+    try {
+      setSavingOption(true);
+      setSyncWarning(null);
+      const res = await setSessionOption(
+        pcIp,
+        pcPort,
+        authToken,
+        sid,
+        configId,
+        value
+      );
+      if (Array.isArray(res.configOptions) && res.configOptions.length > 0) {
+        setSessionConfigOptions(sid, res.configOptions);
+      }
+    } catch (err: any) {
+      if (prevSnapshot) {
+        setSessionConfigOptions(sid, prevSnapshot);
+      }
+      setSyncWarning(err?.message || `Failed updating ${configId}`);
+    } finally {
+      setSavingOption(false);
     }
-    setOptionsMenuOpen(false);
   };
 
   const handleScroll = (ev: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -280,14 +344,15 @@ export default function SessionChatScreen() {
             </TactilePressable>
           ) : (
             <TactilePressable
-              onPress={() => setOptionsMenuOpen(!optionsMenuOpen)}
+              onPress={() => setOptionsMenuOpen(true)}
               accessibilityRole="button"
-              accessibilityLabel="Model and mode options"
+              accessibilityLabel="Model, thinking level, and mode options"
               style={styles.optionsBtn}
             >
               <Layers size={14} color={CORE_COLORS.cyan} />
               <Text style={styles.optionsText} numberOfLines={1}>
-                {currentModelShort.split(" ").slice(0, 2).join(" ")}
+                {currentModelShort}
+                {currentThoughtLabel ? ` · ${currentThoughtLabel}` : ""}
               </Text>
               <ChevronDown size={13} color={CORE_COLORS.textSecondary} />
             </TactilePressable>
@@ -295,23 +360,34 @@ export default function SessionChatScreen() {
         </GlassSurface>
       </View>
 
-      {/* Expandable Options Drawer */}
-      {optionsMenuOpen && (
-        <View style={styles.drawerWrap}>
-          <GlassSurface preset="overlay" elevation="raised" style={styles.optionsDrawer}>
-            <ScrollView contentContainerStyle={styles.drawerInner}>
-              {configOptions.map((cfgGroup) => (
-                <View key={cfgGroup.id} style={styles.drawerSection}>
-                  <Text style={styles.drawerLabel}>{cfgGroup.name}</Text>
-                  <View style={styles.chipsRow}>
-                    {cfgGroup.options.map((opt) => {
-                      const active = cfgGroup.currentValue === opt.value;
-                      return (
-                        <TactilePressable
-                          key={opt.value}
-                          style={[styles.chip, active && styles.chipActive]}
-                          onPress={() => handleSetConfigOption(cfgGroup.id, opt.value)}
-                        >
+      {/* Model, Thinking Level & Mode Dialog */}
+      <GlassDialog open={optionsMenuOpen} onOpenChange={setOptionsMenuOpen}>
+        <GlassDialogContent closeLabel="Close session options">
+          <GlassDialogTitle>Session Options</GlassDialogTitle>
+          <GlassDialogDescription numberOfLines={1}>
+            {currentModelLabel} · Thinking: {currentThoughtLabel || "Medium"}
+          </GlassDialogDescription>
+
+          <ScrollView
+            style={styles.dialogScroll}
+            contentContainerStyle={styles.drawerInner}
+            showsVerticalScrollIndicator={false}
+          >
+            {configOptions.map((cfgGroup) => (
+              <View key={cfgGroup.id} style={styles.drawerSection}>
+                <Text style={styles.drawerLabel}>{cfgGroup.name}</Text>
+                <View style={styles.chipsRow}>
+                  {cfgGroup.options.map((opt) => {
+                    const active = cfgGroup.currentValue === opt.value;
+                    return (
+                      <TactilePressable
+                        key={opt.value}
+                        disabled={savingOption}
+                        style={[styles.chip, active && styles.chipActive]}
+                        onPress={() => handleSetConfigOption(cfgGroup.id, opt.value)}
+                      >
+                        <View style={styles.chipInner}>
+                          {active && <Check size={12} color={CORE_COLORS.cyan} />}
                           <Text
                             style={[
                               styles.chipText,
@@ -320,16 +396,27 @@ export default function SessionChatScreen() {
                           >
                             {opt.name}
                           </Text>
-                        </TactilePressable>
-                      );
-                    })}
-                  </View>
+                        </View>
+                      </TactilePressable>
+                    );
+                  })}
                 </View>
-              ))}
-            </ScrollView>
-          </GlassSurface>
-        </View>
-      )}
+              </View>
+            ))}
+          </ScrollView>
+
+          <View style={styles.dialogFooter}>
+            <GlassButton
+              variant="prominent"
+              size="sm"
+              onPress={() => setOptionsMenuOpen(false)}
+              style={styles.doneBtn}
+            >
+              {savingOption ? "Saving..." : "Done"}
+            </GlassButton>
+          </View>
+        </GlassDialogContent>
+      </GlassDialog>
 
       {/* Turn Status Strip */}
       <View style={styles.turnStatusBar}>
@@ -516,7 +603,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     height: 36,
     borderRadius: 11,
-    maxWidth: 132,
+    maxWidth: 164,
   },
   optionsText: {
     color: CORE_COLORS.cyan,
@@ -524,17 +611,13 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     flexShrink: 1,
   },
-  drawerWrap: {
-    paddingHorizontal: CORE_SPACING.screenX,
-    marginBottom: 8,
-  },
-  optionsDrawer: {
-    maxHeight: 240,
-    borderRadius: CORE_RADIUS.lg,
+  dialogScroll: {
+    maxHeight: 380,
+    marginTop: 8,
   },
   drawerInner: {
-    padding: 14,
-    gap: 12,
+    paddingVertical: 6,
+    gap: 14,
   },
   drawerSection: {
     gap: 7,
@@ -553,12 +636,25 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: CORE_COLORS.borderSubtle,
     paddingHorizontal: 11,
-    paddingVertical: 7,
+    paddingVertical: 8,
     borderRadius: CORE_RADIUS.sm,
+  },
+  chipInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
   },
   chipActive: {
     borderColor: CORE_COLORS.cyanBorder,
     backgroundColor: CORE_COLORS.cyanSoft,
+  },
+  dialogFooter: {
+    marginTop: 12,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+  },
+  doneBtn: {
+    minWidth: 100,
   },
   chipText: {
     color: CORE_COLORS.textSecondary,

@@ -109,7 +109,10 @@ async def websocket_agent_multiplex(websocket: WebSocket):
                 config_id = msg.get("config_id", "")
                 val = msg.get("value", "")
                 if session_id and config_id and val:
-                    await agent_hub.set_session_option(session_id, config_id, val)
+                    try:
+                        await agent_hub.set_session_option(session_id, config_id, val)
+                    except Exception as exc:
+                        await websocket.send_json({"type": "error", "message": str(exc)})
 
     except WebSocketDisconnect:
         agent_hub.unregister_client_socket(websocket)

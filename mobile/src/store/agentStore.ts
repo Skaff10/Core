@@ -21,6 +21,7 @@ interface AgentStoreState {
   availableCommands: Array<{ name: string; description: string }>;
   selectedModel: string;
   selectedMode: string;
+  selectedThoughtLevel: string;
   socketConnected: boolean;
 
   setProjects: (projects: AgentProject[]) => void;
@@ -32,11 +33,13 @@ interface AgentStoreState {
   ) => void;
   setHistory: (sessionId: string, messages: AgentMessage[]) => void;
   setSessionConfigOptions: (sessionId: string, options: AgentConfigOption[]) => void;
+  updateSessionConfigOptionLocal: (sessionId: string, configId: string, value: string, fallbackOptions?: AgentConfigOption[]) => void;
   setSessionCommands: (sessionId: string, commands: Array<{ name: string; description: string }>) => void;
   appendUserMessage: (sessionId: string, message: AgentMessage) => void;
   setSocketConnected: (connected: boolean) => void;
   setSelectedModel: (model: string) => void;
   setSelectedMode: (mode: string) => void;
+  setSelectedThoughtLevel: (level: string) => void;
   handleSessionState: (sessionId: string, data: any) => void;
   handleSocketEvent: (event: any) => void;
   clearSessionHistory: (sessionId: string) => void;
@@ -75,8 +78,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   configOptionsBySession: {},
   commandsBySession: {},
   availableCommands: [],
-  selectedModel: "claude-sonnet-5-5",
+  selectedModel: "gemini-4-argon",
   selectedMode: "default",
+  selectedThoughtLevel: "medium",
   socketConnected: false,
 
   setProjects: (projects) => set({ projects }),
@@ -106,6 +110,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     set((state) => {
       const modelOpt = options.find((o) => o.id === "model");
       const modeOpt = options.find((o) => o.id === "mode");
+      const thoughtOpt = options.find((o) => o.id === "thought_level");
       return {
         configOptionsBySession: {
           ...state.configOptionsBySession,
@@ -119,6 +124,40 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
           state.activeSessionId === sessionId && modeOpt?.currentValue
             ? modeOpt.currentValue
             : state.selectedMode,
+        selectedThoughtLevel:
+          state.activeSessionId === sessionId && thoughtOpt?.currentValue
+            ? thoughtOpt.currentValue
+            : state.selectedThoughtLevel,
+      };
+    }),
+
+  updateSessionConfigOptionLocal: (sessionId, configId, value, fallbackOptions) =>
+    set((state) => {
+      const base =
+        state.configOptionsBySession[sessionId] &&
+        state.configOptionsBySession[sessionId].length > 0
+          ? state.configOptionsBySession[sessionId]
+          : fallbackOptions || [];
+      const updated = base.map((o) =>
+        o.id === configId ? { ...o, currentValue: value } : o
+      );
+      return {
+        configOptionsBySession: {
+          ...state.configOptionsBySession,
+          [sessionId]: updated,
+        },
+        selectedModel:
+          configId === "model" && state.activeSessionId === sessionId
+            ? value
+            : state.selectedModel,
+        selectedMode:
+          configId === "mode" && state.activeSessionId === sessionId
+            ? value
+            : state.selectedMode,
+        selectedThoughtLevel:
+          configId === "thought_level" && state.activeSessionId === sessionId
+            ? value
+            : state.selectedThoughtLevel,
       };
     }),
 
@@ -149,6 +188,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   setSocketConnected: (connected) => set({ socketConnected: connected }),
   setSelectedModel: (model) => set({ selectedModel: model }),
   setSelectedMode: (mode) => set({ selectedMode: mode }),
+  setSelectedThoughtLevel: (level) => set({ selectedThoughtLevel: level }),
 
   clearSessionHistory: (sessionId) =>
     set((state) => ({
@@ -181,10 +221,14 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
             : current.queueDepth,
       };
 
-      const nextConfigs =
-        Array.isArray(data.config_options) && data.config_options.length > 0
-          ? { ...state.configOptionsBySession, [sessionId]: data.config_options }
-          : state.configOptionsBySession;
+      const hasConfigs = Array.isArray(data.config_options) && data.config_options.length > 0;
+      const nextConfigs = hasConfigs
+        ? { ...state.configOptionsBySession, [sessionId]: data.config_options }
+        : state.configOptionsBySession;
+
+      const modelOpt = hasConfigs ? data.config_options.find((o: any) => o.id === "model") : null;
+      const modeOpt = hasConfigs ? data.config_options.find((o: any) => o.id === "mode") : null;
+      const thoughtOpt = hasConfigs ? data.config_options.find((o: any) => o.id === "thought_level") : null;
 
       const nextCmds =
         Array.isArray(data.commands) && data.commands.length > 0
@@ -198,6 +242,18 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         },
         configOptionsBySession: nextConfigs,
         commandsBySession: nextCmds,
+        selectedModel:
+          state.activeSessionId === sessionId && modelOpt?.currentValue
+            ? modelOpt.currentValue
+            : state.selectedModel,
+        selectedMode:
+          state.activeSessionId === sessionId && modeOpt?.currentValue
+            ? modeOpt.currentValue
+            : state.selectedMode,
+        selectedThoughtLevel:
+          state.activeSessionId === sessionId && thoughtOpt?.currentValue
+            ? thoughtOpt.currentValue
+            : state.selectedThoughtLevel,
         activeSessionTitle:
           state.activeSessionId === sessionId && data.title
             ? data.title
@@ -379,8 +435,19 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
           msgs[lastIdx] = {
             ...msgs[lastIdx],
             streaming: false,
+            content: msgs[lastIdx].content || payload.full_text || "",
             stop_reason: payload.stop_reason,
           };
+        } else if (payload.full_text) {
+          msgs.push({
+            id: `ai-${seq || Date.now()}`,
+            role: "assistant",
+            content: payload.full_text,
+            thoughts: "",
+            timestamp: new Date().toLocaleTimeString(),
+            streaming: false,
+            stop_reason: payload.stop_reason,
+          });
         }
         return {
           lastSeqBySession: nextSeqMap,
@@ -425,25 +492,33 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       if (kind === "config") {
         const opts: AgentConfigOption[] =
           payload.configOptions || state.configOptionsBySession[sid] || [];
-        const updatedOpts = payload.configOptions
+        const updatedOpts: AgentConfigOption[] = payload.configOptions
           ? payload.configOptions
           : opts.map((o) =>
               o.id === payload.configId ? { ...o, currentValue: payload.value } : o
             );
+        const modelOpt = updatedOpts.find((o) => o.id === "model");
+        const modeOpt = updatedOpts.find((o) => o.id === "mode");
+        const thoughtOpt = updatedOpts.find((o) => o.id === "thought_level");
+        const isActive = state.activeSessionId === sid;
         return {
           lastSeqBySession: nextSeqMap,
           configOptionsBySession: {
             ...state.configOptionsBySession,
             [sid]: updatedOpts,
           },
-          selectedModel:
-            payload.configId === "model" && state.activeSessionId === sid
-              ? payload.value
-              : state.selectedModel,
-          selectedMode:
-            payload.configId === "mode" && state.activeSessionId === sid
-              ? payload.value
-              : state.selectedMode,
+          selectedModel: isActive
+            ? modelOpt?.currentValue ||
+              (payload.configId === "model" ? payload.value : state.selectedModel)
+            : state.selectedModel,
+          selectedMode: isActive
+            ? modeOpt?.currentValue ||
+              (payload.configId === "mode" ? payload.value : state.selectedMode)
+            : state.selectedMode,
+          selectedThoughtLevel: isActive
+            ? thoughtOpt?.currentValue ||
+              (payload.configId === "thought_level" ? payload.value : state.selectedThoughtLevel)
+            : state.selectedThoughtLevel,
         };
       }
 

@@ -29,13 +29,22 @@ def get_conversation_db_signature(session_id: str) -> Optional[str]:
     wal_file = conv_dir / f"{session_id}.db-wal"
 
     parts = []
-    for path in (db_file, wal_file):
-        try:
-            if path.is_file():
-                st = path.stat()
-                parts.append(f"{path.name}:{st.st_mtime_ns}:{st.st_size}")
-        except OSError:
-            continue
+    try:
+        if db_file.is_file():
+            st = db_file.stat()
+            parts.append(f"{db_file.name}:{st.st_mtime_ns}:{st.st_size}")
+    except OSError:
+        pass
+
+    # Only include .db-wal when it actually holds uncheckpointed frames; SQLite
+    # touches/creates/removes 0-byte -wal files on every open/close.
+    try:
+        if wal_file.is_file():
+            st = wal_file.stat()
+            if st.st_size > 0:
+                parts.append(f"{wal_file.name}:{st.st_mtime_ns}:{st.st_size}")
+    except OSError:
+        pass
 
     return "|".join(parts) if parts else None
 

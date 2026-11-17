@@ -76,13 +76,14 @@ export async function createNewSession(
   token: string,
   cwd: string,
   model?: string,
-  mode?: string
+  mode?: string,
+  thoughtLevel?: string
 ): Promise<any> {
   const url = `http://${ip}:${port}/api/agent/sessions`;
   const res = await fetch(url, {
     method: "POST",
     headers: buildHeaders(token),
-    body: JSON.stringify({ cwd, model, mode }),
+    body: JSON.stringify({ cwd, model, mode, thought_level: thoughtLevel }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -174,11 +175,19 @@ export async function setSessionOption(
   sessionId: string,
   configId: string,
   value: string
-): Promise<void> {
+): Promise<{ configOptions: AgentConfigOption[] }> {
   const url = `http://${ip}:${port}/api/agent/sessions/${encodeURIComponent(sessionId)}/options`;
-  await fetch(url, {
+  const res = await fetch(url, {
     method: "POST",
     headers: buildHeaders(token),
     body: JSON.stringify({ config_id: configId, value }),
   });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.detail || `Set option HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  return {
+    configOptions: data.config_options || data.result?.configOptions || [],
+  };
 }

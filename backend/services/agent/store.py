@@ -46,6 +46,7 @@ class AgentStore:
                         title TEXT,
                         model TEXT,
                         mode TEXT,
+                        thought_level TEXT DEFAULT '',
                         last_seq INTEGER DEFAULT 0,
                         last_synced_sig TEXT DEFAULT '',
                         config_options_json TEXT DEFAULT '[]',
@@ -105,6 +106,7 @@ class AgentStore:
                     CREATE INDEX IF NOT EXISTS idx_tools_session ON tool_calls(session_id, seq_order, created_at);
                     """
                 )
+                self._ensure_column(conn, "sessions", "thought_level", "TEXT DEFAULT ''")
                 self._ensure_column(conn, "sessions", "last_synced_sig", "TEXT DEFAULT ''")
                 self._ensure_column(conn, "sessions", "config_options_json", "TEXT DEFAULT '[]'")
                 self._ensure_column(conn, "messages", "seq_order", "INTEGER DEFAULT 0")
@@ -137,6 +139,7 @@ class AgentStore:
         title: Optional[str] = None,
         model: Optional[str] = None,
         mode: Optional[str] = None,
+        thought_level: Optional[str] = None,
     ) -> Dict[str, Any]:
         with self._lock:
             conn = self._get_connection()
@@ -169,10 +172,10 @@ class AgentStore:
 
                 cur.execute(
                     """
-                    INSERT INTO sessions (session_id, project_id, cwd, title, model, mode, last_seq, last_synced_sig, config_options_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 0, '', '[]', ?, ?)
+                    INSERT INTO sessions (session_id, project_id, cwd, title, model, mode, thought_level, last_seq, last_synced_sig, config_options_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '[]', ?, ?)
                     """,
-                    (session_id, project_id, cwd, title or "Untitled Session", model or "", mode or "default", now, now),
+                    (session_id, project_id, cwd, title or "Untitled Session", model or "", mode or "default", thought_level or "", now, now),
                 )
                 conn.commit()
                 return {
@@ -182,6 +185,7 @@ class AgentStore:
                     "title": title or "Untitled Session",
                     "model": model or "",
                     "mode": mode or "default",
+                    "thought_level": thought_level or "",
                     "last_seq": 0,
                     "last_synced_sig": "",
                     "config_options_json": "[]",
@@ -197,6 +201,7 @@ class AgentStore:
         title: Optional[str] = None,
         model: Optional[str] = None,
         mode: Optional[str] = None,
+        thought_level: Optional[str] = None,
         updated_at: Optional[str] = None,
         last_synced_sig: Optional[str] = None,
         config_options: Optional[List[Dict[str, Any]]] = None,
@@ -215,6 +220,9 @@ class AgentStore:
                 if mode is not None:
                     updates.append("mode = ?")
                     params.append(mode)
+                if thought_level is not None:
+                    updates.append("thought_level = ?")
+                    params.append(thought_level)
                 if last_synced_sig is not None:
                     updates.append("last_synced_sig = ?")
                     params.append(last_synced_sig)

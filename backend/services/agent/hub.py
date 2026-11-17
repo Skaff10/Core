@@ -425,7 +425,55 @@ class AgentHub:
             return stored["config_options"]
         return []
 
+    async def _apply_config_option(
+        self,
+        client: AcpClient,
+        session_id: str,
+        config_id: str,
+        value: str,
+        current_options: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not value:
+            return current_options
+
+        opt = next((o for o in current_options if o.get("id") == config_id), None)
+        if opt is not None:
+            if opt.get("currentValue") == value:
+                return current_options
+            allowed = {item.get("value") for item in (opt.get("options") or []) if item.get("value")}
+            if allowed and value not in allowed:
+                return current_options
+
+        try:
+            res = await client.call(
+                "session/set_config_option",
+                {"sessionId": session_id, "configId": config_id, "value": value},
+                timeout=10,
+            )
+            if "error" in res:
+                return current_options
+            result = res.get("result", {})
+            if result.get("configOptions"):
+                return result["configOptions"]
+            updated = [
+                {**o, "currentValue": value} if o.get("id") == config_id else o
+                for o in current_options
+            ]
+            return updated
+        except Exception:
+            return current_options
+
     async def ensure_session_loaded(
+        self,
+        session_id: str,
+        cwd: str = "",
+        force_reload: bool = False,
+    ) -> Dict[str, Any]:
+        lock = self._get_session_lock(session_id)
+        async with lock:
+            return await self._ensure_session_loaded_locked(session_id, cwd=cwd, force_reload=force_reload)
+
+    async def _ensure_session_loaded_locked(
         self,
         session_id: str,
         cwd: str = "",
@@ -460,6 +508,11 @@ class AgentHub:
                     self._session_clients.pop(old_sid, None)
                     break
 
+        existing_sess = agent_store.get_session(session_id) or {}
+        saved_model = existing_sess.get("model") or ""
+        saved_thought = existing_sess.get("thought_level") or ""
+        saved_mode = existing_sess.get("mode") or ""
+
         client = await self._get_client_for_cwd(resolved_cwd)
         collector = _ReplayCollector(session_id)
         self._replaying[session_id] = collector
@@ -484,6 +537,11 @@ class AgentHub:
         res_data = res.get("result", {})
         config_options = res_data.get("configOptions") or collector.config_options
         if config_options:
+            # Re-apply persisted mobile model / thinking level / mode so ACP
+            # session/load defaults don't overwrite the user's selections.
+            config_options = await self._apply_config_option(client, session_id, "model", saved_model, config_options)
+            config_options = await self._apply_config_option(client, session_id, "thought_level", saved_thought, config_options)
+            config_options = await self._apply_config_option(client, session_id, "mode", saved_mode, config_options)
             self._session_configs[session_id] = config_options
         if collector.commands:
             self._session_commands[session_id] = collector.commands
@@ -531,25 +589,41 @@ class AgentHub:
         """
         lock = self._get_session_lock(session_id)
         async with lock:
-            if self._session_state.get(session_id, "idle") != "idle":
-                return False
-
-            disk_sig = get_conversation_db_signature(session_id)
-            stored_sig = agent_store.get_synced_signature(session_id)
-            msg_count = agent_store.get_message_count(session_id)
-
-            needs_sync = (
-                force
-                or (disk_sig is not None and disk_sig != stored_sig)
-                or (msg_count == 0 and disk_sig is not None)
+            return await self._sync_session_if_stale_locked(
+                session_id,
+                cwd=cwd,
+                force=force,
+                broadcast=broadcast,
             )
-            if not needs_sync:
-                return False
 
-            await self.ensure_session_loaded(session_id, cwd=cwd, force_reload=True)
-            if broadcast:
-                await self._broadcast_history_synced(session_id)
-            return True
+    async def _sync_session_if_stale_locked(
+        self,
+        session_id: str,
+        cwd: str = "",
+        force: bool = False,
+        broadcast: bool = True,
+    ) -> bool:
+        if self._session_state.get(session_id, "idle") != "idle":
+            return False
+
+        disk_sig = get_conversation_db_signature(session_id)
+        stored_sig = agent_store.get_synced_signature(session_id)
+        msg_count = agent_store.get_message_count(session_id)
+        is_loaded = session_id in self._loaded_sessions
+
+        needs_sync = (
+            force
+            or (disk_sig is not None and disk_sig != stored_sig)
+            or (not is_loaded and msg_count == 0 and disk_sig is not None and not stored_sig)
+        )
+        if not needs_sync:
+            return False
+
+        should_force_reload = force or (is_loaded and disk_sig is not None and disk_sig != stored_sig)
+        await self._ensure_session_loaded_locked(session_id, cwd=cwd, force_reload=should_force_reload)
+        if broadcast:
+            await self._broadcast_history_synced(session_id)
+        return True
 
     async def _pc_sync_watcher_loop(self):
         """
@@ -586,6 +660,7 @@ class AgentHub:
         cwd: str,
         model: Optional[str] = None,
         mode: Optional[str] = None,
+        thought_level: Optional[str] = None,
     ) -> Dict[str, Any]:
         await self.initialize()
         norm_cwd = normalize_cwd(cwd)
@@ -619,34 +694,12 @@ class AgentHub:
         self._session_state[sid] = "idle"
         self._known_project_paths.add(norm_cwd)
 
-        config_options = res_data.get("configOptions") or []
-        if config_options:
-            self._session_configs[sid] = config_options
-
         pid = compute_project_id(norm_cwd)
         chosen_model = model or cfg.agent_default_model
         chosen_mode = mode or cfg.agent_default_mode
+        chosen_thought = thought_level or ""
 
-        if chosen_model:
-            try:
-                await client.call(
-                    "session/set_config_option",
-                    {"sessionId": sid, "configId": "model", "value": chosen_model},
-                    timeout=5,
-                )
-            except Exception:
-                pass
-
-        if chosen_mode:
-            try:
-                await client.call(
-                    "session/set_config_option",
-                    {"sessionId": sid, "configId": "mode", "value": chosen_mode},
-                    timeout=5,
-                )
-            except Exception:
-                pass
-
+        # Create session record before setting options so config events get sequential seq numbers
         agent_store.get_or_create_session(
             session_id=sid,
             project_id=pid,
@@ -654,59 +707,97 @@ class AgentHub:
             title="New Conversation",
             model=chosen_model,
             mode=chosen_mode,
+            thought_level=chosen_thought,
         )
+
+        config_options = res_data.get("configOptions") or []
+        if config_options:
+            config_options = await self._apply_config_option(client, sid, "model", chosen_model, config_options)
+            if chosen_thought:
+                config_options = await self._apply_config_option(client, sid, "thought_level", chosen_thought, config_options)
+            config_options = await self._apply_config_option(client, sid, "mode", chosen_mode, config_options)
+            self._session_configs[sid] = config_options
+
+        actual_model = next((o.get("currentValue") for o in config_options if o.get("id") == "model"), None) or chosen_model
+        actual_thought = next((o.get("currentValue") for o in config_options if o.get("id") == "thought_level"), None) or chosen_thought
+        actual_mode = next((o.get("currentValue") for o in config_options if o.get("id") == "mode"), None) or chosen_mode
+        sig = get_conversation_db_signature(sid) or ""
+
         agent_store.update_session(
             sid,
-            model=chosen_model,
-            mode=chosen_mode,
+            model=actual_model,
+            mode=actual_mode,
+            thought_level=actual_thought,
             config_options=config_options if config_options else None,
+            last_synced_sig=sig,
         )
 
         return {
             "sessionId": sid,
             "projectId": pid,
             "cwd": norm_cwd,
-            "model": chosen_model,
-            "mode": chosen_mode,
+            "model": actual_model,
+            "mode": actual_mode,
+            "thought_level": actual_thought,
             "models": res_data.get("models"),
             "modes": res_data.get("modes"),
             "configOptions": config_options,
         }
 
     async def set_session_option(self, session_id: str, config_id: str, value: str) -> Dict[str, Any]:
-        resolved_cwd = await self._resolve_session_cwd(session_id)
-        await self.ensure_session_loaded(session_id, resolved_cwd)
-        client = self._session_clients.get(session_id, self.acp)
+        lock = self._get_session_lock(session_id)
+        async with lock:
+            resolved_cwd = await self._resolve_session_cwd(session_id)
+            await self._ensure_session_loaded_locked(session_id, resolved_cwd)
+            client = self._session_clients.get(session_id, self.acp)
 
-        res = await client.call(
-            "session/set_config_option",
-            {"sessionId": session_id, "configId": config_id, "value": value},
-            timeout=10,
-        )
-        result = res.get("result", {})
-        if config_id == "model":
-            agent_store.update_session(session_id, model=value)
-        elif config_id == "mode":
-            agent_store.update_session(session_id, mode=value)
+            res = await client.call(
+                "session/set_config_option",
+                {"sessionId": session_id, "configId": config_id, "value": value},
+                timeout=10,
+            )
+            if "error" in res:
+                err_msg = res["error"].get("message", str(res["error"]))
+                raise RuntimeError(f"Failed setting {config_id}={value}: {err_msg}")
 
-        if result.get("configOptions"):
-            self._session_configs[session_id] = result["configOptions"]
-            agent_store.update_session(session_id, config_options=result["configOptions"])
-        else:
-            # Update local cached config option value
-            opts = self.get_session_config_options(session_id)
-            for opt in opts:
-                if opt.get("id") == config_id:
-                    opt["currentValue"] = value
-            if opts:
-                agent_store.update_session(session_id, config_options=opts)
+            result = res.get("result", {})
+            if config_id == "model":
+                agent_store.update_session(session_id, model=value)
+            elif config_id == "mode":
+                agent_store.update_session(session_id, mode=value)
+            elif config_id == "thought_level":
+                agent_store.update_session(session_id, thought_level=value)
 
-        await self.broadcast_to_session(
-            session_id,
-            "config",
-            {"configId": config_id, "value": value, "configOptions": self.get_session_config_options(session_id)},
-        )
-        return result
+            if result.get("configOptions"):
+                opts = result["configOptions"]
+                self._session_configs[session_id] = opts
+                # Also sync thought_level / model / mode from updated configOptions
+                model_val = next((o.get("currentValue") for o in opts if o.get("id") == "model"), None)
+                thought_val = next((o.get("currentValue") for o in opts if o.get("id") == "thought_level"), None)
+                mode_val = next((o.get("currentValue") for o in opts if o.get("id") == "mode"), None)
+                agent_store.update_session(
+                    session_id,
+                    model=model_val,
+                    thought_level=thought_val,
+                    mode=mode_val,
+                    config_options=opts,
+                )
+            else:
+                opts = self.get_session_config_options(session_id)
+                for opt in opts:
+                    if opt.get("id") == config_id:
+                        opt["currentValue"] = value
+                if opts:
+                    self._session_configs[session_id] = opts
+                    agent_store.update_session(session_id, config_options=opts)
+
+            final_opts = self.get_session_config_options(session_id)
+            await self.broadcast_to_session(
+                session_id,
+                "config",
+                {"configId": config_id, "value": value, "configOptions": final_opts},
+            )
+            return {"configId": config_id, "value": value, "configOptions": final_opts}
 
     # --- Prompt & Turn Execution ---
 
@@ -759,9 +850,11 @@ class AgentHub:
 
         # Pull latest PC changes before prompting if stale on disk
         try:
-            synced = await self.sync_session_if_stale(session_id, cwd=resolved_cwd, broadcast=True)
-            if not synced:
-                await self.ensure_session_loaded(session_id, resolved_cwd)
+            lock = self._get_session_lock(session_id)
+            async with lock:
+                synced = await self._sync_session_if_stale_locked(session_id, cwd=resolved_cwd, broadcast=True)
+                if not synced:
+                    await self._ensure_session_loaded_locked(session_id, resolved_cwd)
         except Exception as exc:
             await self.broadcast_to_session(
                 session_id,
@@ -1033,14 +1126,25 @@ class AgentHub:
 
         elif u_type == "available_commands_update":
             cmds = update.get("availableCommands", [])
-            self._session_commands[session_id] = cmds
-            await self.broadcast_to_session(session_id, "commands", {"commands": cmds})
+            if cmds != self._session_commands.get(session_id):
+                self._session_commands[session_id] = cmds
+                await self.broadcast_to_session(session_id, "commands", {"commands": cmds})
 
         elif u_type == "config_option_update":
             opts = update.get("configOptions", [])
-            self._session_configs[session_id] = opts
-            agent_store.update_session(session_id, config_options=opts)
-            await self.broadcast_to_session(session_id, "config", {"configOptions": opts})
+            if opts != self._session_configs.get(session_id):
+                self._session_configs[session_id] = opts
+                model_val = next((o.get("currentValue") for o in opts if o.get("id") == "model"), None)
+                thought_val = next((o.get("currentValue") for o in opts if o.get("id") == "thought_level"), None)
+                mode_val = next((o.get("currentValue") for o in opts if o.get("id") == "mode"), None)
+                agent_store.update_session(
+                    session_id,
+                    model=model_val,
+                    thought_level=thought_val,
+                    mode=mode_val,
+                    config_options=opts,
+                )
+                await self.broadcast_to_session(session_id, "config", {"configOptions": opts})
 
     async def _on_acp_permission_request(
         self,

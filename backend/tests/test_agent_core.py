@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.agent.agy_locator import locate_agy_binary
+from services.agent.agy_locator import locate_agy_binary, get_conversation_db_signature
 from services.agent.projects import (
     normalize_cwd,
     compute_project_id,
@@ -194,6 +194,149 @@ def test_hub_live_updates_and_permission_id_type():
     asyncio.run(_run())
 
 
+def test_db_signature_ignores_empty_wal():
+    with tempfile.TemporaryDirectory() as td:
+        conv_dir = Path(td) / "conversations"
+        conv_dir.mkdir(parents=True)
+        db_file = conv_dir / "s1.db"
+        wal_file = conv_dir / "s1.db-wal"
+        db_file.write_bytes(b"sqlite-db")
+
+        with patch("services.agent.agy_locator.get_antigravity_data_dir", return_value=Path(td)):
+            sig1 = get_conversation_db_signature("s1")
+            assert sig1 is not None and "s1.db-wal" not in sig1
+
+            # 0-byte WAL file touched by SQLite open/close must not change signature
+            wal_file.write_bytes(b"")
+            sig2 = get_conversation_db_signature("s1")
+            assert sig2 == sig1
+
+            # Non-empty WAL file with uncheckpointed writes must change signature
+            wal_file.write_bytes(b"wal-frame-data")
+            sig3 = get_conversation_db_signature("s1")
+            assert sig3 != sig1 and "s1.db-wal" in sig3
+
+
+def test_config_options_persist_across_reload():
+    async def _run():
+        with tempfile.TemporaryDirectory() as td:
+            local_store = AgentStore(db_path=Path(td) / "hub_cfg_test.db")
+            proj_dir = Path(td) / "proj"
+            proj_dir.mkdir()
+            hub = AgentHub()
+
+            def make_opts(model="gemini-4-argon", thought="medium", mode="default"):
+                tl_options = [
+                    {"value": "low", "name": "Low"},
+                    {"value": "medium", "name": "Medium"},
+                    {"value": "high", "name": "High"},
+                ]
+                if model == "gemini-4-hydrogen":
+                    tl_options.append({"value": "xhigh", "name": "Extra"})
+                return [
+                    {
+                        "id": "model",
+                        "name": "Model",
+                        "currentValue": model,
+                        "options": [
+                            {"value": "gemini-4-argon", "name": "Gemini 4 Argon"},
+                            {"value": "gemini-4-hydrogen", "name": "Gemini 4 Hydrogen"},
+                            {"value": "gemini-3.8-flash", "name": "Gemini 3.8 Flash"},
+                        ],
+                    },
+                    {
+                        "id": "thought_level",
+                        "name": "Thinking Level",
+                        "currentValue": thought,
+                        "options": tl_options,
+                    },
+                    {
+                        "id": "mode",
+                        "name": "Mode",
+                        "currentValue": mode,
+                        "options": [
+                            {"value": "default", "name": "Default"},
+                            {"value": "plan", "name": "Plan"},
+                        ],
+                    },
+                ]
+
+            state = {"model": "gemini-4-argon", "thought": "medium", "mode": "default", "load_calls": 0}
+
+            class FakeAcp:
+                def is_alive(self):
+                    return True
+
+                async def start(self):
+                    return True
+
+                async def stop(self):
+                    return None
+
+                async def call(self, method, params, timeout=60):
+                    if method == "session/new":
+                        state.update(model="gemini-4-argon", thought="medium", mode="default")
+                        return {"result": {"sessionId": "new-s1", "configOptions": make_opts()}}
+                    if method == "session/load":
+                        state["load_calls"] += 1
+                        # Simulate agy acp resetting configOptions to default on load
+                        state.update(model="gemini-4-argon", thought="medium", mode="default")
+                        return {"result": {"sessionId": params["sessionId"], "configOptions": make_opts()}}
+                    if method == "session/set_config_option":
+                        cid = params["configId"]
+                        val = params["value"]
+                        if cid == "model":
+                            state["model"] = val
+                        elif cid == "thought_level":
+                            state["thought"] = val
+                        elif cid == "mode":
+                            state["mode"] = val
+                        return {"result": {"configOptions": make_opts(state["model"], state["thought"], state["mode"])}}
+                    return {"result": {}}
+
+            hub.acp = FakeAcp()
+            hub._initialized = True
+            hub._known_project_paths.add(str(proj_dir))
+
+            try:
+                with patch("services.agent.hub.agent_store", local_store), \
+                     patch("services.agent.hub.get_conversation_db_signature", return_value="sig-initial"), \
+                     patch("services.agent.hub.is_allowed_project_cwd", return_value=True), \
+                     patch.object(hub, "_get_client_for_cwd", return_value=hub.acp):
+
+                    created = await hub.create_session(
+                        cwd=str(proj_dir),
+                        model="gemini-4-hydrogen",
+                        mode="plan",
+                        thought_level="xhigh",
+                    )
+                    assert created["model"] == "gemini-4-hydrogen"
+                    assert created["thought_level"] == "xhigh"
+                    assert created["mode"] == "plan"
+                    assert next(o["currentValue"] for o in created["configOptions"] if o["id"] == "model") == "gemini-4-hydrogen"
+                    assert next(o["currentValue"] for o in created["configOptions"] if o["id"] == "thought_level") == "xhigh"
+
+                    # Empty newly-created session with matching sig must NOT force-reload
+                    synced = await hub.sync_session_if_stale("new-s1", cwd=str(proj_dir), broadcast=False)
+                    assert synced is False
+                    assert state["load_calls"] == 0
+
+                    # Change thinking level and model via set_session_option
+                    res_opt = await hub.set_session_option("new-s1", "thought_level", "high")
+                    assert next(o["currentValue"] for o in res_opt["configOptions"] if o["id"] == "thought_level") == "high"
+
+                    # Simulate forced reload (like PC edit or restart) where ACP resets to gemini-4-argon/medium
+                    await hub.ensure_session_loaded("new-s1", cwd=str(proj_dir), force_reload=True)
+                    assert state["load_calls"] == 1
+                    assert state["model"] == "gemini-4-hydrogen"
+                    assert state["thought"] == "high"
+                    assert state["mode"] == "plan"
+            finally:
+                await hub.shutdown()
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     test_agy_locator()
     test_projects_normalization()
@@ -201,4 +344,6 @@ if __name__ == "__main__":
     test_events_and_quota()
     test_store_and_replay_order()
     test_hub_live_updates_and_permission_id_type()
+    test_db_signature_ignores_empty_wal()
+    test_config_options_persist_across_reload()
     print("\nALL AGENT CORE UNIT TESTS PASSED!")

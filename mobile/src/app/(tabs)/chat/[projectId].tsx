@@ -46,11 +46,20 @@ import { CORE_COLORS, CORE_RADIUS, CORE_SPACING } from "../../../theme/tokens";
 import { CORE_TYPOGRAPHY } from "../../../theme/typography";
 
 const MODEL_OPTIONS = [
-  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", tag: "Fast & Smart" },
+  { id: "gemini-4-argon", label: "Gemini 4 Argon", tag: "Default · Pro" },
   { id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", tag: "Balanced" },
+  { id: "gemini-pro-orchestrator-g1-pro", label: "Orchestrator (Argon)", tag: "Agentic" },
   { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", tag: "Ultra Fast" },
   { id: "claude-opus-5-5", label: "Claude Opus 5.5", tag: "Deep Reasoning" },
-  { id: "gemini-4-argon", label: "Gemini 4 Argon", tag: "Pro" },
+  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", tag: "Fast & Smart" },
+  { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "Open Weights" },
+];
+
+const THOUGHT_LEVEL_OPTIONS = [
+  { id: "low", label: "Low", desc: "Minimal reasoning overhead" },
+  { id: "medium", label: "Medium", desc: "Balanced speed and depth" },
+  { id: "high", label: "High", desc: "Deep multi-step reasoning" },
+  { id: "xhigh", label: "Extra", desc: "Maximum thinking budget (Hydrogen)" },
 ];
 
 const MODE_OPTIONS = [
@@ -64,7 +73,7 @@ export default function ProjectSessionsScreen() {
   const insets = useSafeAreaInsets();
   const { projectId } = useLocalSearchParams<{ projectId: string }>();
   const { pcIp, pcPort, authToken } = useConnectionStore();
-  const { setActiveSession } = useAgentStore();
+  const { setActiveSession, setSessionConfigOptions } = useAgentStore();
 
   const [project, setProject] = useState<AgentProject | null>(null);
   const [sessions, setSessions] = useState<AgentSession[]>([]);
@@ -75,6 +84,7 @@ export default function ProjectSessionsScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [creating, setCreating] = useState(false);
   const [selectedModel, setSelectedModel] = useState(MODEL_OPTIONS[0].id);
+  const [selectedThoughtLevel, setSelectedThoughtLevel] = useState("medium");
   const [selectedMode, setSelectedMode] = useState(MODE_OPTIONS[0].id);
 
   const loadSessions = useCallback(async () => {
@@ -115,13 +125,18 @@ export default function ProjectSessionsScreen() {
     if (!project || !pcIp || !authToken) return;
     try {
       setCreating(true);
+      const effectiveThought =
+        selectedThoughtLevel === "xhigh" && selectedModel !== "gemini-4-hydrogen"
+          ? "high"
+          : selectedThoughtLevel;
       const res = await createNewSession(
         pcIp,
         pcPort,
         authToken,
         project.path,
         selectedModel,
-        selectedMode
+        selectedMode,
+        effectiveThought
       );
       setModalVisible(false);
       const newSid = res.session?.sessionId;
@@ -132,6 +147,9 @@ export default function ProjectSessionsScreen() {
           project.path,
           res.session?.title || "New Conversation"
         );
+        if (Array.isArray(res.session?.configOptions) && res.session.configOptions.length > 0) {
+          setSessionConfigOptions(newSid, res.session.configOptions);
+        }
         router.push(`/(tabs)/chat/session/${newSid}` as any);
       } else {
         await loadSessions();
@@ -324,7 +342,12 @@ export default function ProjectSessionsScreen() {
                 return (
                   <TactilePressable
                     key={m.id}
-                    onPress={() => setSelectedModel(m.id)}
+                    onPress={() => {
+                      setSelectedModel(m.id);
+                      if (m.id !== "gemini-4-hydrogen" && selectedThoughtLevel === "xhigh") {
+                        setSelectedThoughtLevel("high");
+                      }
+                    }}
                     style={[styles.optionRow, active && styles.optionRowActive]}
                   >
                     <View style={styles.optionLeft}>
@@ -337,6 +360,37 @@ export default function ProjectSessionsScreen() {
                         {m.label}
                       </Text>
                       <Text style={styles.optionSub}>{m.tag}</Text>
+                    </View>
+                    {active && <Check size={16} color={CORE_COLORS.cyan} />}
+                  </TactilePressable>
+                );
+              })}
+            </View>
+
+            <Text style={[styles.sectionLabel, { marginTop: 14 }]}>
+              Thinking Level
+            </Text>
+            <View style={styles.optionsGroup}>
+              {THOUGHT_LEVEL_OPTIONS.filter(
+                (t) => t.id !== "xhigh" || selectedModel === "gemini-4-hydrogen"
+              ).map((t) => {
+                const active = selectedThoughtLevel === t.id;
+                return (
+                  <TactilePressable
+                    key={t.id}
+                    onPress={() => setSelectedThoughtLevel(t.id)}
+                    style={[styles.optionRow, active && styles.optionRowActive]}
+                  >
+                    <View style={styles.optionLeft}>
+                      <Text
+                        style={[
+                          styles.optionTitle,
+                          active && styles.optionTitleActive,
+                        ]}
+                      >
+                        {t.label}
+                      </Text>
+                      <Text style={styles.optionSub}>{t.desc}</Text>
                     </View>
                     {active && <Check size={16} color={CORE_COLORS.cyan} />}
                   </TactilePressable>

@@ -15,6 +15,7 @@ class CreateSessionRequest(BaseModel):
     cwd: str
     model: Optional[str] = None
     mode: Optional[str] = None
+    thought_level: Optional[str] = None
 
 
 class PermissionResponseRequest(BaseModel):
@@ -72,6 +73,7 @@ async def create_new_session(payload: CreateSessionRequest):
             cwd=payload.cwd,
             model=payload.model,
             mode=payload.mode,
+            thought_level=payload.thought_level,
         )
         return {"status": "created", "session": session_info}
     except ValueError as exc:
@@ -157,6 +159,10 @@ async def set_session_config_option(session_id: str, payload: SetOptionRequest):
             config_id=payload.config_id,
             value=payload.value,
         )
-        return {"status": "updated", "result": res}
+        return {
+            "status": "updated",
+            "config_options": res.get("configOptions", []),
+            "result": res,
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
